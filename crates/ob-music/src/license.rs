@@ -340,6 +340,175 @@ pub fn format_usage_entry(entry: &UsageEntry) -> String {
     }
 }
 
+/// One bulletin feeding the aggregate licensing report
+/// (roles step 6, Q5/Q7): its Sunday label — the
+/// bulletin's ISO date when it has one, else its long
+/// date, else its file name — and the per-bulletin
+/// entries `usage_report` found in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulletinUsage {
+    pub date: String,
+    pub entries: Vec<UsageEntry>,
+}
+
+/// One row of the aggregate licensing report (roles
+/// step 6, Q7): a licensed song, the Sundays it was
+/// sung, and the dates. A row is one title under one
+/// licensor with one license number: the same song
+/// under a different number is a different row, so a
+/// number recorded on one Sunday never hides a gap
+/// on another. The source is the first bulletin's
+/// wording for the song.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LicensingRow {
+    pub title: String,
+    pub licensor: String,
+    pub number: Option<String>,
+    pub source: String,
+    /// Sundays the song was used, each counted once
+    /// however many times it was sung that Sunday.
+    pub sundays: usize,
+    /// The Sundays, in the order the bulletins were
+    /// read (the folder's file order).
+    pub dates: Vec<String>,
+    /// Licensed, but no number recorded on any of
+    /// these Sundays: the row still surfaces, flagged,
+    /// so the gap is visible.
+    pub missing_number: bool,
+}
+
+/// One licensor's totals in the roll-up: how many of
+/// its songs were used, and how many Sundays of use
+/// they add up to. `missing` counts the rows with no
+/// license number recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LicensorTotal {
+    pub licensor: String,
+    pub songs: usize,
+    pub sundays: usize,
+    pub missing: usize,
+}
+
+/// The aggregate licensing report (roles step 6, Q5/Q7):
+/// `usage_report` run over a folder of past bulletins
+/// and rolled up. Rows are sorted by licensor, then
+/// title, then number, so the report reads the same
+/// way however the folder was picked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LicensingRollup {
+    pub rows: Vec<LicensingRow>,
+    pub totals: Vec<LicensorTotal>,
+    /// Bulletins read (files skipped do not count).
+    pub bulletins: usize,
+}
+
+/// Roll `usage_report` entries up across bulletins
+/// (roles step 6, Q7): one row per licensed song, with
+/// the Sundays it was used and the dates. The inclusion
+/// rule is `usage_report`'s own — licensed only, so
+/// unlicensed and unknown songs never reach a row — and
+/// a song sung twice in one service counts once: a
+/// Sunday joins a row's dates at most once, however
+/// many entries that Sunday holds for the song.
+pub fn roll_up_usages(bulletins: &[BulletinUsage]) -> LicensingRollup {
+    let mut rows: Vec<LicensingRow> = Vec::new();
+    for bulletin in bulletins {
+        for entry in &bulletin.entries {
+            let at = rows.iter().position(|row| {
+                row.title == entry.title
+                    && row.licensor == entry.licensor
+                    && row.number == entry.number
+            });
+            let row = match at {
+                Some(i) => &mut rows[i],
+                None => {
+                    rows.push(LicensingRow {
+                        title: entry.title.clone(),
+                        licensor: entry.licensor.clone(),
+                        number: entry.number.clone(),
+                        source: entry.source.clone(),
+                        sundays: 0,
+                        dates: Vec::new(),
+                        missing_number: entry.missing_number,
+                    });
+                    rows.last_mut().expect("row just pushed")
+                }
+            };
+            if !row.dates.contains(&bulletin.date) {
+                row.dates.push(bulletin.date.clone());
+                row.sundays += 1;
+            }
+        }
+    }
+    rows.sort_by(|a, b| {
+        (&a.licensor, &a.title, a.number.as_deref().unwrap_or("")).cmp(&(
+            &b.licensor,
+            &b.title,
+            b.number.as_deref().unwrap_or(""),
+        ))
+    });
+    let mut totals: Vec<LicensorTotal> = Vec::new();
+    for row in &rows {
+        let at = totals.iter().position(|t| t.licensor == row.licensor);
+        let total = match at {
+            Some(i) => &mut totals[i],
+            None => {
+                totals.push(LicensorTotal {
+                    licensor: row.licensor.clone(),
+                    songs: 0,
+                    sundays: 0,
+                    missing: 0,
+                });
+                totals.last_mut().expect("total just pushed")
+            }
+        };
+        total.songs += 1;
+        total.sundays += row.sundays;
+        if row.missing_number {
+            total.missing += 1;
+        }
+    }
+    LicensingRollup {
+        rows,
+        totals,
+        bulletins: bulletins.len(),
+    }
+}
+
+/// The roll-up's missing-number gaps, by name: every
+/// row whose song is licensed but has no license
+/// number recorded on any Sunday in the roll-up.
+pub fn rollup_gaps(rollup: &LicensingRollup) -> Vec<&LicensingRow> {
+    rollup
+        .rows
+        .iter()
+        .filter(|row| row.missing_number)
+        .collect()
+}
+
+/// One roll-up row as a single line for the report:
+/// "Title — CCLI #123456 — used on 2 Sundays:
+/// 2026-10-18, 2026-10-25 (Music file: x.musicxml)",
+/// or with the gap named when no number is recorded.
+pub fn format_rollup_row(row: &LicensingRow) -> String {
+    let sundays = if row.sundays == 1 {
+        "1 Sunday".to_string()
+    } else {
+        format!("{} Sundays", row.sundays)
+    };
+    let dates = row.dates.join(", ");
+    match &row.number {
+        Some(number) => format!(
+            "{} — {} #{} — used on {}: {} ({})",
+            row.title, row.licensor, number, sundays, dates, row.source
+        ),
+        None => format!(
+            "{} — {} license number not recorded — used on {}: {} ({})",
+            row.title, row.licensor, sundays, dates, row.source
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,5 +734,188 @@ mod tests {
             "{}",
             format_usage_entry(&report[1])
         );
+    }
+
+    fn licensed_song_doc(title: &str, number: &str) -> Document {
+        let mut doc = empty_doc();
+        let rights_line = if number.is_empty() {
+            "© 2019 Jane Doe. Reprinted under CCLI license".to_string()
+        } else {
+            format!("© 2019 Jane Doe. Reprinted under CCLI license #{number}")
+        };
+        let licensed = RightsRecord {
+            source: "song.musicxml".to_string(),
+            source_url: None,
+            license: LicenseKind::LicensedReprint,
+            title: title.to_string(),
+            creator: "Jane Doe".to_string(),
+            copyright_line: rights_line,
+            credit_text: String::new(),
+            licensor_ref: number.to_string(),
+            asserted_by: String::new(),
+            asserted_at: String::new(),
+            children_present: None,
+            child_web_permission: None,
+        };
+        doc.add_asset(
+            format!("fake music bytes {title}").as_bytes(),
+            AssetKind::Music,
+            "application/xml",
+            licensed,
+        );
+        doc
+    }
+
+    fn hymn_doc_twice() -> Document {
+        let mut doc = empty_doc();
+        doc.stories.push(Story {
+            id: "order".to_string(),
+            keep_through: None,
+            paragraphs: vec![
+                Paragraph::plain("body", "Sermon:\tPastor"),
+                Paragraph::plain(
+                    "order-line",
+                    "Hymn of Praise\tELW 432 · O Come, All Ye Faithful",
+                ),
+                Paragraph::plain(
+                    "order-line",
+                    "Closing Hymn\tELW 432 · O Come, All Ye Faithful",
+                ),
+            ],
+        });
+        doc
+    }
+
+    fn hymn_memory_with_license(number: &str) -> HymnMemory {
+        let mut memory = HymnMemory::default();
+        memory.learn(
+            &HymnEntry {
+                hymnal: Some("ELW".to_string()),
+                number: Some("432".to_string()),
+                title: Some("O Come, All Ye Faithful".to_string()),
+            },
+            ob_model::SimpleDate {
+                year: 2026,
+                month: 10,
+                day: 18,
+            },
+        );
+        assert!(memory.note_license(
+            Some("ELW"),
+            "432",
+            HymnLicense {
+                kind: LicenseKind::LicensedReprint,
+                licensor: "ONE LICENSE".to_string(),
+                number: number.to_string(),
+                copyright_line: "© 2020 John Smith".to_string(),
+            },
+        ));
+        memory
+    }
+
+    #[test]
+    fn roll_up_counts_a_song_on_two_sundays_as_one_row() {
+        let memory = HymnMemory::default();
+        let first = BulletinUsage {
+            date: "2026-10-18".to_string(),
+            entries: usage_report(&licensed_song_doc("Licensed Song", "123456"), &memory),
+        };
+        let mut second_doc = licensed_song_doc("Licensed Song", "123456");
+        let other = RightsRecord {
+            source: "other.musicxml".to_string(),
+            source_url: None,
+            license: LicenseKind::LicensedReprint,
+            title: "Second Song".to_string(),
+            creator: "Jane Doe".to_string(),
+            copyright_line: "© 2019 Jane Doe. Reprinted under CCLI license #123456".to_string(),
+            credit_text: String::new(),
+            licensor_ref: "123456".to_string(),
+            asserted_by: String::new(),
+            asserted_at: String::new(),
+            children_present: None,
+            child_web_permission: None,
+        };
+        second_doc.add_asset(
+            b"other fake music bytes",
+            AssetKind::Music,
+            "application/xml",
+            other,
+        );
+        let second = BulletinUsage {
+            date: "2026-10-25".to_string(),
+            entries: usage_report(&second_doc, &memory),
+        };
+        let rollup = roll_up_usages(&[first, second]);
+        assert_eq!(rollup.bulletins, 2);
+        assert_eq!(rollup.rows.len(), 2, "one row per song");
+        let row = &rollup.rows[0];
+        assert_eq!(row.title, "Licensed Song");
+        assert_eq!(row.sundays, 2);
+        assert_eq!(row.dates, vec!["2026-10-18", "2026-10-25"]);
+        assert!(!row.missing_number);
+        assert_eq!(rollup.totals.len(), 1);
+        assert_eq!(rollup.totals[0].licensor, "CCLI");
+        assert_eq!(rollup.totals[0].songs, 2);
+        assert_eq!(rollup.totals[0].sundays, 3);
+        assert_eq!(rollup.totals[0].missing, 0);
+        let line = format_rollup_row(row);
+        assert!(
+            line.contains("used on 2 Sundays: 2026-10-18, 2026-10-25"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn roll_up_flags_a_missing_number_gap_by_name() {
+        let memory = hymn_memory_with_license("");
+        let bulletin = BulletinUsage {
+            date: "2026-10-18".to_string(),
+            entries: usage_report(&hymn_doc_twice(), &memory),
+        };
+        let rollup = roll_up_usages(&[bulletin]);
+        assert_eq!(rollup.rows.len(), 1);
+        let row = &rollup.rows[0];
+        assert!(row.missing_number);
+        assert!(row.number.is_none());
+        let gaps = rollup_gaps(&rollup);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].title, "O Come, All Ye Faithful");
+        let line = format_rollup_row(row);
+        assert!(line.contains("license number not recorded"), "{line}");
+    }
+
+    #[test]
+    fn roll_up_counts_a_song_sung_twice_in_one_service_once() {
+        let memory = hymn_memory_with_license("A-987654");
+        let bulletin = BulletinUsage {
+            date: "2026-10-18".to_string(),
+            entries: usage_report(&hymn_doc_twice(), &memory),
+        };
+        assert_eq!(bulletin.entries.len(), 1, "one entry per service");
+        let rollup = roll_up_usages(&[bulletin]);
+        assert_eq!(rollup.rows.len(), 1);
+        assert_eq!(rollup.rows[0].sundays, 1);
+        assert_eq!(rollup.rows[0].dates, vec!["2026-10-18"]);
+    }
+
+    #[test]
+    fn roll_up_of_one_bulletin_matches_its_usage_report() {
+        let memory = HymnMemory::default();
+        let doc = licensed_song_doc("Licensed Song", "123456");
+        let entries = usage_report(&doc, &memory);
+        let rollup = roll_up_usages(&[BulletinUsage {
+            date: "2026-10-18".to_string(),
+            entries: entries.clone(),
+        }]);
+        assert_eq!(rollup.rows.len(), entries.len());
+        for (row, entry) in rollup.rows.iter().zip(entries.iter()) {
+            assert_eq!(row.title, entry.title);
+            assert_eq!(row.licensor, entry.licensor);
+            assert_eq!(row.number, entry.number);
+            assert_eq!(row.source, entry.source);
+            assert_eq!(row.missing_number, entry.missing_number);
+            assert_eq!(row.sundays, 1);
+            assert_eq!(row.dates, vec!["2026-10-18"]);
+        }
     }
 }

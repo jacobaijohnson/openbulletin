@@ -335,6 +335,82 @@ impl App {
         }
     }
 
+    /// Save the aggregate licensing report (roles step
+    /// 6, Q5/Q6/Q7): the office picks a folder of past
+    /// `.obd` files, the app reads each one, runs the
+    /// per-bulletin `usage_report` on it, and rolls up
+    /// — one row per licensed song, per-licensor totals,
+    /// gaps listed by name — then exports the roll-up
+    /// as a PDF through the same funnel as the music
+    /// proof. The 20-file settings memory is NOT the
+    /// source. An unreadable file in the folder is
+    /// skipped and named in the report, never failing
+    /// the whole roll-up, never hidden. PDF only in v1;
+    /// a CSV copy is a named follow-up, not built here.
+    /// The saved report's name and counts are kept as
+    /// the session's Check-step summary, so the office
+    /// finds the report without hunting.
+    fn save_licensing_report(&mut self) {
+        let Some(folder) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+        let folder_name = file_name_of(&folder);
+        let scan = match scan_licensing_folder(&folder, &self.hymn_memory) {
+            Ok(scan) => scan,
+            Err(reason) => {
+                self.status = format!("Could not make a licensing report: {reason}.");
+                return;
+            }
+        };
+        if scan.rollup.bulletins == 0 && scan.skipped.is_empty() {
+            self.status = format!(
+                "Could not make a licensing report: no past bulletins (.obd files) in {folder_name}."
+            );
+            return;
+        }
+        let (report, counts) =
+            licensing_report_document(&self.doc, &scan.rollup, &folder_name, &scan.skipped);
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name("licensing-report.pdf")
+            .add_filter("PDF", &["pdf"])
+            .save_file()
+        {
+            self.pin_fonts();
+            let (bytes, _report) = ob_pdf::export_reader_pdf_report_with_cache(
+                &report,
+                ob_pdf::ExportPurpose::ForPrinting,
+                &mut self.export_image_cache,
+            );
+            let file_name = file_name_of(&path);
+            self.status = match write_file_atomically(&path, &bytes) {
+                Ok(()) => {
+                    let summary = licensing_report_summary_note(&scan.rollup, &file_name);
+                    self.licensing_report_summary = Some(summary.clone());
+                    let skipped = if counts.skipped == 0 {
+                        String::new()
+                    } else if counts.skipped == 1 {
+                        format!(" 1 file was skipped: {}.", scan.skipped.join(", "))
+                    } else {
+                        format!(
+                            " {} files were skipped: {}.",
+                            counts.skipped,
+                            scan.skipped.join(", ")
+                        )
+                    };
+                    format!(
+                        "Licensing report saved: {file_name} — {} licensed song{}, {} Sunday{} of use, {} with no license number recorded.{skipped}",
+                        counts.songs,
+                        if counts.songs == 1 { "" } else { "s" },
+                        counts.sundays,
+                        if counts.sundays == 1 { "" } else { "s" },
+                        counts.gaps,
+                    )
+                }
+                Err(e) => format!("Could not save the licensing report: {e}"),
+            };
+        }
+    }
+
     /// Record the contributor's approval of one filed
     /// part (roles step 6, Q2): the admin records it
     /// when the contributor says yes after reading the
@@ -690,6 +766,14 @@ struct App {
     announcements: String,
     notes: Vec<CheckNote>,
     status: String,
+    /// The Check-step summary naming the last licensing
+    /// report saved in this session (roles step 6, §New
+    /// work item 5): the report's file name and its
+    /// counts, so the office finds it without hunting.
+    /// Session-only — it names the file that was saved,
+    /// never a stored mark, and it is not kept in the
+    /// document or the settings.
+    licensing_report_summary: Option<String>,
     /// The last "Save a copy for another program..." result,
     /// shown under that button on the Print step: what was
     /// saved and what the copy could not carry.
@@ -1121,6 +1205,7 @@ impl Default for App {
             announcements,
             notes: Vec::new(),
             status,
+            licensing_report_summary: None,
             export_note: None,
             char_findings: Vec::new(),
             ann_keep_through: String::new(),
@@ -3516,6 +3601,24 @@ impl eframe::App for App {
                             if let Some(n) = approve_idx {
                                 self.record_contributor_approval(&filed_rows[n].0);
                             }
+                        }
+                        // Licensing report (roles step 6,
+                        // Q5/Q6/Q7): one list of every
+                        // licensed song used in past
+                        // bulletins, with the license
+                        // numbers and the Sundays it was
+                        // sung. The office picks a folder
+                        // of past bulletins; the report is
+                        // a PDF file to keep, and its name
+                        // and counts are named on the
+                        // Check step afterwards, so the
+                        // office finds it without hunting.
+                        ui.label("Licensing report: every licensed song used in past bulletins, who licensed it, the license number, and which Sundays it was sung — with the songs that have no number recorded named, never hidden. Pick a folder of past bulletins (.obd files) and save the report as a PDF.");
+                        if ui.button("Licensing report...").clicked() {
+                            self.save_licensing_report();
+                        }
+                        if let Some(summary) = &self.licensing_report_summary {
+                            ui.label(summary);
                         }
                         ui.separator();
                         ui.label("A copy for another program: an InDesign (IDML) file or a Scribus file carries the words, their boxes, and their fonts, so someone with one of those programs can take the bulletin from here. A PDF copy carries the finished pages instead.");
@@ -8048,6 +8151,35 @@ mod settings_tests {
                 .iter()
                 .any(|n| n.text.to_ascii_lowercase().contains("verified")),
             "never the word verified: {:?}",
+            app.notes
+        );
+    }
+
+    #[test]
+    fn clean_check_names_the_saved_licensing_report() {
+        // Roles step 6, §New work item 5, at the App
+        // seam: a licensing report saved in this session
+        // is named in the Check step's notes by its file
+        // name and counts, so the office finds it
+        // without hunting.
+        let mut app = clean_app_with_template();
+        app.licensing_report_summary = Some(
+            "Licensing report saved as licensing-report.pdf: 3 licensed songs from 2 past bulletins, 4 Sundays of use, 1 song with no license number recorded."
+                .to_string(),
+        );
+        app.run_checks();
+        assert!(
+            app.notes
+                .iter()
+                .any(|n| n.text.contains("licensing-report.pdf")),
+            "the saved report is named in Check's notes: {:?}",
+            app.notes
+        );
+        assert!(
+            app.notes
+                .iter()
+                .any(|n| n.text.contains("3 licensed songs from 2 past bulletins")),
+            "the counts ride with the name: {:?}",
             app.notes
         );
     }

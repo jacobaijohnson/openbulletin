@@ -408,6 +408,311 @@ pub(crate) fn license_usage_findings(
     out
 }
 
+/// A past bulletin's Sunday label for the licensing
+/// roll-up (roles step 6, Q5/Q7): its ISO date when
+/// it has one, else its long date, else its file name
+/// — so a bulletin is always named by its Sunday, and
+/// a dateless file is still named, never dropped.
+pub(crate) fn bulletin_date_label(doc: &Document, path: &std::path::Path) -> String {
+    if let Some(iso) = doc.fields.get("occasion_date") {
+        if !iso.trim().is_empty() {
+            return iso.trim().to_string();
+        }
+    }
+    if let Some(long) = doc.fields.get("occasion_date_long") {
+        if !long.trim().is_empty() {
+            return long.trim().to_string();
+        }
+    }
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "a past bulletin".to_string())
+}
+
+/// What a folder of past bulletins rolled up to
+/// (roles step 6, Q5): the roll-up itself, plus the
+/// files that could not be read, named — never hidden
+/// and never failing the whole roll-up (mirror the
+/// Inbox rule).
+pub(crate) struct LicensingFolderScan {
+    pub(crate) rollup: ob_music::license::LicensingRollup,
+    pub(crate) skipped: Vec<String>,
+}
+
+/// Read a folder of past `.obd` files and roll their
+/// license usage up (roles step 6, Q5/Q7): the office
+/// picks the folder, the app reads each `.obd` file in
+/// file order, runs the per-bulletin `usage_report` on
+/// it with the church's hymn memory, and rolls up. A
+/// file that cannot be read is skipped and named in
+/// `skipped` — the roll-up still stands on the files
+/// that did read. Files that are not `.obd` files are
+/// not bulletins and are passed over. The 20-file
+/// settings memory is NOT the source. Err only when
+/// the folder itself cannot be listed.
+pub(crate) fn scan_licensing_folder(
+    dir: &std::path::Path,
+    memory: &ob_model::hymns::HymnMemory,
+) -> Result<LicensingFolderScan, String> {
+    let listed = std::fs::read_dir(dir).map_err(|e| format!("Could not list that folder: {e}"))?;
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    for entry in listed {
+        let entry = entry.map_err(|e| format!("Could not list that folder: {e}"))?;
+        let path = entry.path();
+        let is_obd = path
+            .extension()
+            .map(|ext| ext.eq_ignore_ascii_case("obd"))
+            .unwrap_or(false);
+        if is_obd {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    let mut bulletins: Vec<ob_music::license::BulletinUsage> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for path in &paths {
+        match ob_format::load(path) {
+            Ok(doc) => {
+                let date = bulletin_date_label(&doc, path);
+                let entries = ob_music::license::usage_report(&doc, memory);
+                bulletins.push(ob_music::license::BulletinUsage { date, entries });
+            }
+            Err(_) => {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                skipped.push(name);
+            }
+        }
+    }
+    let rollup = ob_music::license::roll_up_usages(&bulletins);
+    Ok(LicensingFolderScan { rollup, skipped })
+}
+
+/// What a licensing report carries, counted for its
+/// status line and its Check-step summary (roles step
+/// 6, Q5/Q7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LicensingReportCounts {
+    pub(crate) bulletins: usize,
+    pub(crate) songs: usize,
+    pub(crate) sundays: usize,
+    pub(crate) gaps: usize,
+    pub(crate) skipped: usize,
+}
+
+/// Compose the aggregate licensing report document
+/// (roles step 6, Q5/Q7): one row per licensed song
+/// (title, licensor, number, Sundays used, dates),
+/// per-licensor totals, and the missing-number gaps
+/// listed by name — plus the files that were skipped,
+/// named. Composed the way `music_proof_document`
+/// composes the music proof (a heading, the rows under
+/// their licensor headings, one page per panel set,
+/// letter-portrait), from the current document's
+/// styles and church name only: the report's words
+/// are its own, never the bulletin's. Host-document
+/// music only in v1 — music inside an insert rides
+/// the synthesized insert document at print, not the
+/// host doc, so it is not counted here, and the
+/// report says so in plain words instead of shipping
+/// quietly short. Pure: the same roll-up in, the same
+/// report out.
+pub(crate) fn licensing_report_document(
+    doc: &Document,
+    rollup: &ob_music::license::LicensingRollup,
+    folder_name: &str,
+    skipped: &[String],
+) -> (Document, LicensingReportCounts) {
+    let page = ob_model::Size::LETTER_PORTRAIT;
+    let margin: ob_model::Mpt = 54_000; // 3/4 inch
+    let usable_w = page.w - 2 * margin;
+    let usable_h = page.h - 2 * margin;
+    let heading_style = if doc.style("heading").is_some() {
+        "heading"
+    } else {
+        "body"
+    };
+    let church = doc.profile.name.trim();
+    let heading = if church.is_empty() {
+        "Licensing report".to_string()
+    } else {
+        format!("Licensing report — {church}")
+    };
+    let sundays: usize = rollup.rows.iter().map(|row| row.sundays).sum();
+    let gaps = ob_music::license::rollup_gaps(rollup).len();
+    let mut paras = vec![ob_model::Paragraph::plain(heading_style, &heading)];
+    let intro = if rollup.bulletins == 0 {
+        format!("No past bulletins were read in {folder_name}.")
+    } else {
+        let bulletins = if rollup.bulletins == 1 {
+            "1 past bulletin".to_string()
+        } else {
+            format!("{} past bulletins", rollup.bulletins)
+        };
+        let songs = if rollup.rows.len() == 1 {
+            "1 licensed song".to_string()
+        } else {
+            format!("{} licensed songs", rollup.rows.len())
+        };
+        let sundays_word = if sundays == 1 {
+            "1 Sunday of use".to_string()
+        } else {
+            format!("{sundays} Sundays of use")
+        };
+        format!("From {bulletins} in {folder_name}: {songs}, {sundays_word}.")
+    };
+    paras.push(ob_model::Paragraph::plain("body", &intro));
+    for total in &rollup.totals {
+        let songs = if total.songs == 1 {
+            "1 song".to_string()
+        } else {
+            format!("{} songs", total.songs)
+        };
+        let sundays_word = if total.sundays == 1 {
+            "1 Sunday of use".to_string()
+        } else {
+            format!("{} Sundays of use", total.sundays)
+        };
+        let total_heading = format!("{} — {songs}, {sundays_word}", total.licensor);
+        paras.push(ob_model::Paragraph::plain(heading_style, &total_heading));
+        for row in rollup
+            .rows
+            .iter()
+            .filter(|row| row.licensor == total.licensor)
+        {
+            let line = ob_music::license::format_rollup_row(row);
+            paras.push(ob_model::Paragraph::plain("body", &line));
+        }
+    }
+    paras.push(ob_model::Paragraph::plain(
+        heading_style,
+        "Songs with no license number recorded",
+    ));
+    let gap_rows = ob_music::license::rollup_gaps(rollup);
+    if gap_rows.is_empty() {
+        paras.push(ob_model::Paragraph::plain(
+            "body",
+            "None — every licensed song in these bulletins has a number recorded.",
+        ));
+    } else {
+        for row in gap_rows {
+            let dates = row.dates.join(", ");
+            let line = format!(
+                "{} ({}) — used on {}: {}",
+                row.title,
+                row.licensor,
+                if row.sundays == 1 {
+                    "1 Sunday".to_string()
+                } else {
+                    format!("{} Sundays", row.sundays)
+                },
+                dates
+            );
+            paras.push(ob_model::Paragraph::plain("body", &line));
+        }
+    }
+    if !skipped.is_empty() {
+        paras.push(ob_model::Paragraph::plain(
+            heading_style,
+            "Files skipped — they could not be read, so they are not in this report",
+        ));
+        for name in skipped {
+            let line = format!("{name} could not be read, so it is not in this report.");
+            paras.push(ob_model::Paragraph::plain("body", &line));
+        }
+    }
+    paras.push(ob_model::Paragraph::plain(
+        "body",
+        "This report counts host-document music only. Music inside an insert is not counted \
+         here: an insert's music rides the insert's own document at print, not the host bulletin.",
+    ));
+    let text_frame = |id: &str, name: &str, story: &str| ob_model::Frame {
+        id: id.to_string(),
+        name: name.to_string(),
+        kind: ob_model::FrameKind::Text,
+        rect: ob_model::Rect::new(margin, margin, usable_w, usable_h),
+        story_id: Some(story.to_string()),
+        role: ob_model::ContentRole::Standing,
+        picture: None,
+        music: None,
+    };
+    let mut out = doc.clone();
+    out.title = "Licensing report".to_string();
+    out.stories = vec![ob_model::Story {
+        id: "report-words".to_string(),
+        paragraphs: paras,
+        keep_through: None,
+    }];
+    out.panels = vec![ob_model::Panel {
+        id: "report-page-1".to_string(),
+        name: "Licensing report".to_string(),
+        size: page,
+        frames: vec![text_frame(
+            "report-words-frame",
+            "Licensing report",
+            "report-words",
+        )],
+        guides: Vec::new(),
+        background_image: None,
+    }];
+    out.sheet = ob_model::SheetSpec {
+        preset: "letter-portrait".to_string(),
+        size: page,
+    };
+    (
+        out,
+        LicensingReportCounts {
+            bulletins: rollup.bulletins,
+            songs: rollup.rows.len(),
+            sundays,
+            gaps,
+            skipped: skipped.len(),
+        },
+    )
+}
+
+/// The Check-step summary naming a saved licensing
+/// report (roles step 6, §New work item 5): the
+/// report's file name and its counts, in one plain
+/// note, so the office finds the report without
+/// hunting. Session-only: it names the file that was
+/// saved, never a stored mark, and it never says
+/// "verified".
+pub(crate) fn licensing_report_summary_note(
+    rollup: &ob_music::license::LicensingRollup,
+    file_name: &str,
+) -> String {
+    let sundays: usize = rollup.rows.iter().map(|row| row.sundays).sum();
+    let gaps = ob_music::license::rollup_gaps(rollup).len();
+    let bulletins = if rollup.bulletins == 1 {
+        "1 past bulletin".to_string()
+    } else {
+        format!("{} past bulletins", rollup.bulletins)
+    };
+    let songs = if rollup.rows.len() == 1 {
+        "1 licensed song".to_string()
+    } else {
+        format!("{} licensed songs", rollup.rows.len())
+    };
+    let sundays_word = if sundays == 1 {
+        "1 Sunday of use".to_string()
+    } else {
+        format!("{sundays} Sundays of use")
+    };
+    let gaps_word = if gaps == 0 {
+        "every licensed song has a number recorded".to_string()
+    } else if gaps == 1 {
+        "1 song with no license number recorded".to_string()
+    } else {
+        format!("{gaps} songs with no license number recorded")
+    };
+    format!(
+        "Licensing report saved as {file_name}: {songs} from {bulletins}, {sundays_word}, {gaps_word}."
+    )
+}
+
 /// Check's hymn pass (R-2a): each hymn line in the order
 /// of service, held up against itself and against the
 /// church's hymn memory. A number with no title and a
@@ -1806,6 +2111,232 @@ mod tests {
         let notes = license_usage_findings(&doc, &memory);
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(notes[0].text.contains("CCLI #123456"), "{}", notes[0].text);
+    }
+
+    #[test]
+    fn licensing_report_lists_rows_totals_gaps_and_skipped_files() {
+        // Roles step 6, Q5/Q7: the roll-up composed as a
+        // report document — one row per licensed song,
+        // per-licensor totals, gaps listed by name, skipped
+        // files named, and the host-only scope said out loud.
+        use ob_music::license::{BulletinUsage, UsageEntry};
+        let first = BulletinUsage {
+            date: "2026-10-18".to_string(),
+            entries: vec![
+                UsageEntry {
+                    title: "Licensed Song".to_string(),
+                    source: "Music file: song.musicxml".to_string(),
+                    licensor: "CCLI".to_string(),
+                    number: Some("123456".to_string()),
+                    copyright_line: "© 2019 Jane Doe".to_string(),
+                    missing_number: false,
+                },
+                UsageEntry {
+                    title: "Gap Song".to_string(),
+                    source: "Hymn: ELW 433".to_string(),
+                    licensor: "ONE LICENSE".to_string(),
+                    number: None,
+                    copyright_line: "© 2020 John Smith".to_string(),
+                    missing_number: true,
+                },
+            ],
+        };
+        let second = BulletinUsage {
+            date: "2026-10-25".to_string(),
+            entries: vec![
+                UsageEntry {
+                    title: "Licensed Song".to_string(),
+                    source: "Music file: song.musicxml".to_string(),
+                    licensor: "CCLI".to_string(),
+                    number: Some("123456".to_string()),
+                    copyright_line: "© 2019 Jane Doe".to_string(),
+                    missing_number: false,
+                },
+                UsageEntry {
+                    title: "Second Song".to_string(),
+                    source: "Music file: other.musicxml".to_string(),
+                    licensor: "CCLI".to_string(),
+                    number: Some("999".to_string()),
+                    copyright_line: "© 2019 Jane Doe".to_string(),
+                    missing_number: false,
+                },
+            ],
+        };
+        let rollup = ob_music::license::roll_up_usages(&[first, second]);
+        let doc = doc_with_hymn_line("Hymn of Praise\tELW 432 · O Come, All Ye Faithful");
+        let skipped = vec!["broken.obd".to_string()];
+        let (report, counts) = licensing_report_document(&doc, &rollup, "past-bulletins", &skipped);
+        assert_eq!(counts.bulletins, 2);
+        assert_eq!(counts.songs, 3);
+        assert_eq!(counts.sundays, 4);
+        assert_eq!(counts.gaps, 1);
+        assert_eq!(counts.skipped, 1);
+        let words: Vec<String> = report
+            .stories
+            .iter()
+            .flat_map(|s| s.paragraphs.iter().map(|p| p.text().to_string()))
+            .collect();
+        let text = words.join("\n");
+        assert!(
+            text.contains(
+                "Licensed Song — CCLI #123456 — used on 2 Sundays: 2026-10-18, 2026-10-25"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("CCLI — 2 songs, 3 Sundays of use"), "{text}");
+        assert!(
+            text.contains("ONE LICENSE — 1 song, 1 Sunday of use"),
+            "{text}"
+        );
+        assert!(text.contains("Gap Song (ONE LICENSE)"), "{text}");
+        assert!(
+            text.contains("broken.obd could not be read, so it is not in this report."),
+            "{text}"
+        );
+        assert!(
+            text.contains("host-document music only"),
+            "the insert-music limit is named, never silent: {text}"
+        );
+        assert!(
+            !text.contains("verified"),
+            "the report never prints \"verified\": {text}"
+        );
+    }
+
+    #[test]
+    fn licensing_report_of_one_bulletin_matches_its_check_list() {
+        // Roles step 6, acceptance criterion 6: a folder
+        // of one bulletin aggregates to exactly that
+        // bulletin's Check license-usage note list.
+        let doc = doc_with_hymn_line("Hymn of Praise\tELW 432 · O Come, All Ye Faithful");
+        let memory = memory_with_number("123456");
+        let notes = license_usage_findings(&doc, &memory);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        let entries = ob_music::license::usage_report(&doc, &memory);
+        let rollup = ob_music::license::roll_up_usages(&[ob_music::license::BulletinUsage {
+            date: "2026-10-18".to_string(),
+            entries: entries.clone(),
+        }]);
+        assert_eq!(rollup.rows.len(), entries.len());
+        for (row, entry) in rollup.rows.iter().zip(entries.iter()) {
+            assert_eq!(row.title, entry.title);
+            assert_eq!(row.licensor, entry.licensor);
+            assert_eq!(row.number, entry.number);
+            assert_eq!(row.sundays, 1);
+        }
+        let (report, _) = licensing_report_document(&doc, &rollup, "past-bulletins", &[]);
+        let words: Vec<String> = report
+            .stories
+            .iter()
+            .flat_map(|s| s.paragraphs.iter().map(|p| p.text().to_string()))
+            .collect();
+        let text = words.join("\n");
+        for entry in &entries {
+            let line = ob_music::license::format_usage_entry(entry);
+            // The row line carries the same title, licensor,
+            // number, and source as Check's line, plus its
+            // Sundays and dates.
+            assert!(text.contains(&entry.title), "{text}");
+            assert!(text.contains(&entry.licensor), "{text}");
+            assert!(
+                text.contains(entry.number.as_deref().unwrap_or("")),
+                "{text}"
+            );
+            assert!(text.contains(&entry.source), "{text}");
+            assert!(notes[0].text.contains(&line), "{}", notes[0].text);
+        }
+    }
+
+    #[test]
+    fn licensing_folder_scan_skips_an_unreadable_file_and_names_it() {
+        // Roles step 6, Q5: an unreadable file in the
+        // folder is skipped and NAMED — never fails the
+        // whole roll-up, never hidden.
+        let dir = std::env::temp_dir().join(format!(
+            "ob-licensing-scan-{}-{}",
+            std::process::id(),
+            "r6c"
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scan dir");
+        let mut doc = doc_with_hymn_line("Hymn of Praise\tELW 432 · O Come, All Ye Faithful");
+        doc.fields
+            .insert("occasion_date".to_string(), "2026-10-18".to_string());
+        let good = dir.join("2026-10-18.obd");
+        ob_format::save(&doc, &good).expect("good bulletin saves");
+        std::fs::write(dir.join("broken.obd"), b"not a bulletin at all")
+            .expect("broken file writes");
+        std::fs::write(dir.join("notes.txt"), b"not a bulletin").expect("txt writes");
+        let memory = memory_with_number("123456");
+        let scan = scan_licensing_folder(&dir, &memory).expect("folder scans");
+        assert_eq!(scan.rollup.bulletins, 1);
+        assert_eq!(scan.rollup.rows.len(), 1);
+        assert_eq!(scan.rollup.rows[0].title, "O Come, All Ye Faithful");
+        assert_eq!(scan.rollup.rows[0].dates, vec!["2026-10-18"]);
+        assert_eq!(scan.skipped, vec!["broken.obd"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn licensing_folder_scan_rolls_two_bulletins_up_through_real_files() {
+        // Roles step 6, acceptance criterion 5, end to
+        // end: two saved `.obd` files in a folder roll
+        // up through the scan itself — the same song on
+        // two Sundays is one row with two Sundays.
+        let dir = std::env::temp_dir().join(format!(
+            "ob-licensing-scan-two-{}-{}",
+            std::process::id(),
+            "r6c"
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scan dir");
+        let mut first = doc_with_hymn_line("Hymn of Praise\tELW 432 · O Come, All Ye Faithful");
+        first
+            .fields
+            .insert("occasion_date".to_string(), "2026-10-18".to_string());
+        ob_format::save(&first, &dir.join("2026-10-18.obd")).expect("first saves");
+        let mut second = doc_with_hymn_line("Closing Hymn\tELW 432 · O Come, All Ye Faithful");
+        second
+            .fields
+            .insert("occasion_date".to_string(), "2026-10-25".to_string());
+        ob_format::save(&second, &dir.join("2026-10-25.obd")).expect("second saves");
+        let memory = memory_with_number("123456");
+        let scan = scan_licensing_folder(&dir, &memory).expect("folder scans");
+        assert_eq!(scan.rollup.bulletins, 2);
+        assert_eq!(scan.rollup.rows.len(), 1);
+        assert_eq!(scan.rollup.rows[0].title, "O Come, All Ye Faithful");
+        assert_eq!(scan.rollup.rows[0].sundays, 2);
+        assert_eq!(scan.rollup.rows[0].dates, vec!["2026-10-18", "2026-10-25"]);
+        assert!(scan.skipped.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn licensing_report_summary_note_names_the_report() {
+        // Roles step 6, §New work item 5: the Check-step
+        // summary names the saved report file and its
+        // counts, so the office finds it without hunting.
+        use ob_music::license::{BulletinUsage, UsageEntry};
+        let entry = UsageEntry {
+            title: "Licensed Song".to_string(),
+            source: "Music file: song.musicxml".to_string(),
+            licensor: "CCLI".to_string(),
+            number: Some("123456".to_string()),
+            copyright_line: "© 2019 Jane Doe".to_string(),
+            missing_number: false,
+        };
+        let rollup = ob_music::license::roll_up_usages(&[BulletinUsage {
+            date: "2026-10-18".to_string(),
+            entries: vec![entry],
+        }]);
+        let note = licensing_report_summary_note(&rollup, "licensing-report.pdf");
+        assert!(note.contains("licensing-report.pdf"), "{note}");
+        assert!(
+            note.contains("1 licensed song from 1 past bulletin"),
+            "{note}"
+        );
+        assert!(note.contains("1 Sunday of use"), "{note}");
+        assert!(!note.contains("verified"), "{note}");
     }
 
     #[test]

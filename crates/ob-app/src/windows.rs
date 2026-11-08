@@ -766,6 +766,15 @@ impl App {
         // office to report from, with a warning per song
         // whose license number is not recorded.
         notes.extend(license_usage_findings(&self.doc, &self.hymn_memory));
+        // The licensing report saved this session
+        // (roles step 6, §New work item 5): its file
+        // name and its counts, in one plain note, so
+        // the office finds the report without hunting.
+        // Session-only — it names the file that was
+        // saved, never a stored mark.
+        if let Some(summary) = &self.licensing_report_summary {
+            notes.push(CheckNote::plain(summary.clone()));
+        }
         // The loose sheets (R-3): a sheet with no words,
         // and a dated sheet whose date has passed, named
         // before either prints wrong.

@@ -1,0 +1,22 @@
+[package]
+name = "ob-snippets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenBulletin reusable snippets: the library-side snippet store plus the keep-time dedupe decision, reusing the fingerprint index."
+
+[dependencies]
+ob-fingerprint = { path = "../ob-fingerprint" }
+ob-fonts = { path = "../ob-fonts" }
+ob-image = { path = "../ob-image" }
+ob-model = { path = "../ob-model" }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[lints]
+workspace = true

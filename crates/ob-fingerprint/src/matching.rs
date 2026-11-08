@@ -50,12 +50,29 @@ use crate::music::{music_decision, MusicCandidateIndex, MusicDecision, MusicFing
 use crate::text::{short_text_scores, text_band, text_scores, TextDecision, TextFingerprint};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The index file's own version. It bundles the entry
 /// shapes below; the per-type `fp_version` strings
 /// still gate every comparison independently.
 pub const INDEX_VERSION: &str = "fp-index-v1";
+
+/// The conventional home of the index file:
+/// `<base>/OpenBulletin/fingerprints.json`, where
+/// `<base>` is the parent of
+/// `ob_fonts::default_library_dir()` — the same base
+/// computation as `ob_clips::default_library_dir()`.
+/// The app owns the path and hands it to
+/// [`FingerprintIndex::load`] and `save`; this helper
+/// only names the conventional location. It touches no
+/// band, no `fp_version` string, and no `INDEX_VERSION`.
+pub fn default_index_path() -> PathBuf {
+    let fonts = ob_fonts::default_library_dir();
+    match fonts.parent() {
+        Some(base) => base.join("fingerprints.json"),
+        None => PathBuf::from("fingerprints.json"),
+    }
+}
 
 /// Proposals for a text query: (match, entry name).
 pub type TextProposals = Vec<(Match, String)>;
@@ -639,6 +656,13 @@ mod tests {
             incipit: String::new(),
             pae: String::new(),
         }
+    }
+
+    #[test]
+    fn default_index_path_ends_in_library_home() {
+        let path = default_index_path();
+        let tail = PathBuf::from("OpenBulletin").join("fingerprints.json");
+        assert!(path.ends_with(tail), "path is {path:?}");
     }
 
     #[test]

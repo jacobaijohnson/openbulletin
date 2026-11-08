@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "OpenBulletin content fingerprints: the library index that tells same file, same content, and probably-the-same apart, in plain words."
 
 [dependencies]
+ob-fonts = { path = "../ob-fonts" }
 ob-image = { path = "../ob-image" }
 ob-music = { path = "../ob-music" }
 serde = { workspace = true }

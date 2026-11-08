@@ -2883,6 +2883,7 @@ dependencies = [
 name = "ob-fingerprint"
 version = "0.1.0"
 dependencies = [
+ "ob-fonts",
  "ob-image",
  "ob-music",
  "serde",
@@ -3002,6 +3003,20 @@ name = "ob-runner"
 version = "0.1.0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "ob-snippets"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "ob-fingerprint",
+ "ob-fonts",
+ "ob-image",
+ "ob-model",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

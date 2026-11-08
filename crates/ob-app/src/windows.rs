@@ -10,7 +10,9 @@ use crate::inserts::*;
 use crate::preview::*;
 use crate::settings::*;
 use crate::snippets::{
-    execute_keep, keepables_for_story, resolve_ask, AskChoice, KeepAction, KeepOutcome,
+    cancel_note, execute_keep, keepables_for_story, matching_snippets,
+    place_snippet_picture_in_doc, place_snippet_song_in_doc, place_snippet_text_in_doc,
+    resolve_ask, snippet_credit_line, AskChoice, KeepAction, KeepOutcome,
 };
 use crate::*;
 
@@ -3653,6 +3655,299 @@ impl App {
         }
     }
 
+    /// The Snippets library window (Batch C), modelled
+    /// on the Clip art window: list/search kept snippets,
+    /// show name + credit line, place the picked one.
+    /// The picker reads the store at
+    /// `<base>/OpenBulletin/snippets.json` + bytes dir;
+    /// a missing file is an empty library, a damaged
+    /// file is a loud error. Placement is deferred
+    /// until after `show()` returns, the way the clips
+    /// window does it; the placement functions
+    /// themselves live in `snippets.rs` and are
+    /// function-tested, while this window wiring is
+    /// code-reviewed (the window cannot be driven
+    /// headless).
+    pub(crate) fn snippets_window(&mut self, ctx: &egui::Context) {
+        if !self.show_snippets {
+            return;
+        }
+        let store = ob_snippets::SnippetStore::load(&ob_snippets::default_store_path());
+        let target = match self.selected_frame {
+            Some(fi) if self.doc.panels.get(self.canvas_panel).is_some() => {
+                Some((self.canvas_panel, fi))
+            }
+            _ => None,
+        };
+        let mut open = self.show_snippets;
+        let mut place: Option<String> = None;
+        egui::Window::new("Snippets")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(560.0)
+            .default_height(440.0)
+            .show(ctx, |ui| {
+                match &store {
+                    Err(reason) => {
+                        ui.label(format!("The snippet library could not be read: {reason}"));
+                        ui.label("Nothing was placed. Fix the library file and open Snippets again.");
+                    }
+                    Ok(store) => {
+                        ui.label("Find a snippet by words in its name:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.snippet_query)
+                                .hint_text("try: cross, hymn, welcome"),
+                        );
+                        if target.is_none() {
+                            ui.label(
+                                "Tip: click a box on the page in the Pages window first; \
+                                 then a picture or a song here goes into that box. \
+                                 Announcements always get a new box.",
+                            );
+                        }
+                        let hits = matching_snippets(store, &self.snippet_query);
+                        if hits.is_empty() {
+                            ui.label(if store.snippets.is_empty() {
+                                "No snippets kept yet. Tick \"Keep in the library\" on an import review to keep one."
+                            } else {
+                                "No kept snippets match those words."
+                            });
+                        }
+                        egui::ScrollArea::vertical()
+                            .id_salt("snippet-list")
+                            .max_height(300.0)
+                            .show(ui, |ui| {
+                                for record in &hits {
+                                    ui.horizontal(|ui| {
+                                        let kind = match record.kind {
+                                            ob_snippets::SnippetKind::Picture => "Picture",
+                                            ob_snippets::SnippetKind::Music => "Song",
+                                            ob_snippets::SnippetKind::Text => "Announcement",
+                                        };
+                                        if ui.small_button("Place").clicked() {
+                                            place = Some(record.id.clone());
+                                        }
+                                        ui.label(egui::RichText::new(&record.name).strong());
+                                        ui.label(kind);
+                                        ui.label(snippet_credit_line(record));
+                                    });
+                                    ui.separator();
+                                }
+                            });
+                    }
+                }
+                ui.separator();
+                if let Some(status) = &self.snippet_status {
+                    ui.label(status.clone());
+                }
+                ui.label(
+                    "Snippets are copied into the bulletin, with their credit attached, \
+                     so the bulletin always travels complete.",
+                );
+            });
+        self.show_snippets = open;
+        if let Some(id) = place {
+            self.place_snippet(&id);
+        }
+    }
+
+    /// Place one kept snippet, by its content SHA-256:
+    /// the bytes are read from the bytes dir, then the
+    /// kind decides the door. Pictures need a selected
+    /// box; songs take a selected box or get new ones;
+    /// announcements always get a new box.
+    fn place_snippet(&mut self, id: &str) {
+        let store = match ob_snippets::SnippetStore::load(&ob_snippets::default_store_path()) {
+            Ok(store) => store,
+            Err(reason) => {
+                self.snippet_status =
+                    Some(format!("The snippet library could not be read: {reason}"));
+                return;
+            }
+        };
+        let Some(record) = store.get(id).cloned() else {
+            self.snippet_status = Some("That snippet is no longer in the library.".into());
+            return;
+        };
+        let bytes = match std::fs::read(ob_snippets::default_bytes_dir().join(&record.id)) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                self.snippet_status =
+                    Some(format!("That snippet's kept bytes could not be read: {e}"));
+                return;
+            }
+        };
+        let idx = self.canvas_panel;
+        if self.doc.panels.get(idx).is_none() {
+            self.snippet_status = Some("That page is not in this bulletin any more.".into());
+            return;
+        }
+        match record.kind {
+            ob_snippets::SnippetKind::Picture => match self.selected_frame {
+                None => {
+                    self.snippet_status =
+                        Some("Click a box on the page first, then pick the snippet.".into());
+                }
+                Some(fi) => self.place_snippet_picture(idx, fi, &record, &bytes),
+            },
+            ob_snippets::SnippetKind::Music => {
+                let frame_idx = self.selected_frame;
+                // The engraver is asked at the width the
+                // boxes will actually be: this panel's full
+                // text width, at the 6.5 mm target staff.
+                let (xml, _info) = match ob_music::load_music(&bytes) {
+                    Ok(parsed) => parsed,
+                    Err(why) => {
+                        self.snippet_status =
+                            Some(format!("That song cannot be read as music: {why}"));
+                        return;
+                    }
+                };
+                let width_mpt = self.doc.panels[idx].size.w - 2 * ob_music::draft::MARGIN;
+                let width_mm = ob_model::mpt_to_inches(width_mpt) * 25.4;
+                let render = match ob_music::render_music(&xml, width_mm, ob_music::TARGET_STAFF_MM)
+                {
+                    Ok(render) => Some(render),
+                    Err(ob_music::RenderError::NotAvailable(_)) => None,
+                    Err(why) => {
+                        self.snippet_status = Some(format!("The music could not be drawn: {why}"));
+                        return;
+                    }
+                };
+                self.place_snippet_song(idx, frame_idx, &record, &bytes, render.as_ref());
+            }
+            ob_snippets::SnippetKind::Text => self.place_snippet_text(idx, &record, &bytes),
+        }
+    }
+
+    /// Place a kept picture into the selected box. The
+    /// refusal is checked before undo is pushed, the way
+    /// `place_stored_picture` does it; the doc-level
+    /// function re-checks and is the tested authority.
+    pub(crate) fn place_snippet_picture(
+        &mut self,
+        idx: usize,
+        fi: usize,
+        record: &ob_snippets::SnippetRecord,
+        bytes: &[u8],
+    ) {
+        if self.frame_is_music(idx, fi) {
+            self.snippet_status = Some("That box holds music; a picture cannot go in it.".into());
+            return;
+        }
+        self.push_undo_now();
+        match place_snippet_picture_in_doc(&mut self.doc, idx, fi, record, bytes) {
+            Ok(_) => {
+                self.snippet_status =
+                    Some(format!("\"{}\" is in the box on the page.", record.name));
+            }
+            Err(why) => {
+                self.snippet_status = Some(why);
+            }
+        }
+    }
+
+    /// Place a kept song: an empty picture frame takes
+    /// system 0, a music frame is replaced, any other
+    /// filled box refuses before undo is pushed; with no
+    /// frame selected the song gets new boxes. The render
+    /// (when the engraver drew one) is supplied by the
+    /// caller; `None` is the no-engraver empty box.
+    pub(crate) fn place_snippet_song(
+        &mut self,
+        idx: usize,
+        frame_idx: Option<usize>,
+        record: &ob_snippets::SnippetRecord,
+        bytes: &[u8],
+        render: Option<&ob_music::RenderOutcome>,
+    ) {
+        if let Some(fi) = frame_idx {
+            let refuses = self
+                .doc
+                .panels
+                .get(idx)
+                .and_then(|panel| panel.frames.get(fi))
+                .map(|frame| {
+                    frame.music.is_none()
+                        && !(frame.kind == ob_model::FrameKind::Picture && frame.picture.is_none())
+                })
+                .unwrap_or(false);
+            if refuses {
+                self.snippet_status = Some(
+                    "That box already holds something. Pick an empty picture box or a music \
+                     box, or pick no box and the song gets new boxes."
+                        .into(),
+                );
+                return;
+            }
+        }
+        self.push_undo_now();
+        match place_snippet_song_in_doc(&mut self.doc, idx, frame_idx, record, bytes, render) {
+            Ok(placed) => {
+                // Select the system-0 box when it landed
+                // on this panel, the way a new box is
+                // selected on creation.
+                let source = ob_model::sha256_hex(bytes);
+                if let Some(fi) = self.doc.panels[idx].frames.iter().position(|frame| {
+                    frame.music.as_ref().map(|m| (m.system, m.source.as_str()))
+                        == Some((0, source.as_str()))
+                }) {
+                    self.selected_frame = Some(fi);
+                }
+                let mut note = if placed.rendered {
+                    if placed.systems > 1 {
+                        format!(
+                            "\"{}\" is on the page ({} lines of music).",
+                            record.name, placed.systems
+                        )
+                    } else {
+                        format!("\"{}\" is on the page.", record.name)
+                    }
+                } else {
+                    format!(
+                        "\"{}\" is on the page, but the notes are not drawn yet: the music \
+                         engraver is not on this computer.",
+                        record.name
+                    )
+                };
+                if placed.permission_missing_number {
+                    note.push_str(
+                        " This song is reprinted under a church license but the file states \
+                         no license number, so no permission line with the number prints.",
+                    );
+                }
+                self.snippet_status = Some(note);
+            }
+            Err(why) => {
+                self.snippet_status = Some(why);
+            }
+        }
+    }
+
+    /// Place kept announcement words as a new text box
+    /// on the panel, mirroring `add_text_box` through the
+    /// doc-level function in `snippets.rs`.
+    pub(crate) fn place_snippet_text(
+        &mut self,
+        idx: usize,
+        record: &ob_snippets::SnippetRecord,
+        bytes: &[u8],
+    ) {
+        self.push_undo_now();
+        match place_snippet_text_in_doc(&mut self.doc, idx, record, bytes) {
+            Ok((_sid, fi)) => {
+                self.selected_frame = Some(fi);
+                self.snippet_status = Some(format!(
+                    "\"{}\" is on the page. Drag it where it belongs.",
+                    record.name
+                ));
+            }
+            Err(why) => {
+                self.snippet_status = Some(why);
+            }
+        }
+    }
+
     /// "Add a collection" from a folder of pictures.
     pub(crate) fn add_clips_from_folder(&mut self) {
         let Some(folder) = rfd::FileDialog::new().pick_folder() else {
@@ -4556,6 +4851,9 @@ impl App {
                     if ui.button("Clip art...").clicked() {
                         self.ensure_starter_clips();
                         self.show_clips = true;
+                    }
+                    if ui.button("Snippets...").clicked() {
+                        self.show_snippets = true;
                     }
                     if ui.button("Loose sheets...").clicked() {
                         self.insert_lib_dirty = true;
@@ -8229,8 +8527,12 @@ impl App {
                 }
             }
             self.import_armed = false;
+            // Batch C, C-1: read the kept state BEFORE
+            // reset_keep_state() clears it, so the note
+            // says the kept items stay when any survived.
+            let kept = !self.kept_items.is_empty();
             self.reset_keep_state();
-            self.note("Import cancelled; nothing changed.".into());
+            self.note(cancel_note(kept).to_string());
         }
     }
 

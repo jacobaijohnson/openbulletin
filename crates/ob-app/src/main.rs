@@ -648,6 +648,12 @@ struct App {
     /// The "put a picture in the box" picker (a file door
     /// plus the document's loose pictures).
     show_pic_picker: bool,
+    /// The Snippets library window and its state
+    /// (Batch C): the search words and the last status
+    /// line the window showed.
+    show_snippets: bool,
+    snippet_query: String,
+    snippet_status: Option<String>,
     /// The Loose sheets window and its state (R-3).
     show_inserts: bool,
     /// The loose sheet on the canvas right now, by id.
@@ -1039,6 +1045,9 @@ impl Default for App {
             clip_query: String::new(),
             clip_status: None,
             show_pic_picker: false,
+            show_snippets: false,
+            snippet_query: String::new(),
+            snippet_status: None,
             show_inserts: false,
             insert_edit: None,
             insert_sel: None,
@@ -3441,6 +3450,7 @@ impl eframe::App for App {
         self.pages_window(ctx);
         self.picture_picker_window(ctx);
         self.clips_window(ctx);
+        self.snippets_window(ctx);
         self.inserts_window(ctx);
         if pages_were_open && !self.show_pages && self.step == 3 {
             // A fix made on the canvas can clear a finding:

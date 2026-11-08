@@ -35,13 +35,14 @@ pub const PANEL_H: i64 = 612_000;
 /// Breathing room at the panel edges.
 pub const MARGIN: i64 = 14_400;
 /// The gap between the heading and the music, and between
-/// lines of music.
-const GAP: i64 = 16_000;
+/// lines of music. Public so reuse placement lays a song
+/// out exactly the way the draft does.
+pub const GAP: i64 = 16_000;
 /// The heading box's height: title, a subtitle or
 /// composer line or two, at bulletin sizes.
-const HEADING_H: i64 = 60_000;
+pub const HEADING_H: i64 = 60_000;
 /// The credit line's height under the music.
-const CREDIT_H: i64 = 34_000;
+pub const CREDIT_H: i64 = 34_000;
 
 /// The width every music box is drawn at: the panel's
 /// full text width. The engraver is asked for exactly

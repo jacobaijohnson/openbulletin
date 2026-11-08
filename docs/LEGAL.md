@@ -129,6 +129,18 @@ for text normalisation, licensed `(MIT OR
 Apache-2.0) AND Unicode-3.0` — both families already
 in the tree's allowed set, and its only dependency,
 tinyvec, was already present. No new license family
+enters with this build. Recount for the reusable-
+snippets build (2026-11-08, `cargo metadata --locked
+--offline --format-version 1`, exit 0): 607 packages.
+The one-unit delta over 606 is `ob-snippets` 0.1.0,
+the first-party workspace crate created in batch A
+(workspace license, MIT OR Apache-2.0, a path
+dependency, not a new third-party package). Batches
+B–D added dependency edges only (`ob-fingerprint` and
+`ob-snippets` under `openbulletin`; `ob-snippets` and
+`image` under `openbulletin-cli`, the latter a
+dev-dependency for PNG fixtures, both already in the
+lock) and no new package. No new license family
 enters with this build. The importer makes no network
 calls: pictures are carried only when their bytes are
 inside the page itself (data: URIs), and web-addressed

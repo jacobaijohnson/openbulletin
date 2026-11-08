@@ -19,6 +19,7 @@ ob-impose = { path = "../ob-impose" }
 ob-fonts = { path = "../ob-fonts" }
 ob-extract = { path = "../ob-extract" }
 ob-fingerprint = { path = "../ob-fingerprint" }
+ob-snippets = { path = "../ob-snippets" }
 ob-image = { path = "../ob-image" }
 chrono.workspace = true
 serde_json.workspace = true
@@ -29,6 +30,7 @@ workspace = true
 
 [dev-dependencies]
 ob-text = { path = "../ob-text" }
+image = { version = "0.25", default-features = false, features = ["png"] }
 # Round 55, batch C, R54-RED-2: the CLI tests build
 # documents through the same library doors the binary
 # uses, so a seasonal refusal can be exercised end to

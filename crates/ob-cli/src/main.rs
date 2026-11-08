@@ -1,6 +1,6 @@
 //! OpenBulletin CLI: the headless engine operations (new, export,
 //! export-idml, export-sla, export-md, export-html, next-sunday,
-//! info, fonts, trace, fingerprint, duplicates). The import doors live in the app.
+//! info, fonts, trace, fingerprint, duplicates, snippets). The import doors live in the app.
 //! If it cannot be done here, the GUI is hiding engine problems.
 
 use clap::{Parser, Subcommand};
@@ -135,6 +135,13 @@ enum Cmd {
         #[arg(long)]
         add: Vec<PathBuf>,
     },
+    /// Reusable snippets: list what is kept, keep a
+    /// file into the library, or check the dedupe tier
+    /// a file would hit without storing anything.
+    Snippets {
+        #[command(subcommand)]
+        action: SnippetsCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -167,6 +174,41 @@ enum FontsCmd {
         id: String,
         #[arg(long)]
         dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SnippetsCmd {
+    /// List the kept snippets: name + kind + credit
+    /// line (the default store unless --store).
+    List {
+        #[arg(long)]
+        store: Option<PathBuf>,
+    },
+    /// Keep a file into the snippet store, through
+    /// the same decide + store path as the review
+    /// window's tick. A near-duplicate is reported
+    /// and nothing is stored.
+    Keep {
+        file: PathBuf,
+        /// What the file is: picture, song, or text.
+        #[arg(long, value_parser = ["picture", "song", "text"])]
+        kind: String,
+        /// The plain name the office recognises.
+        /// Defaults to the file name.
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        store: Option<PathBuf>,
+    },
+    /// Dedupe check only: report the tier the file
+    /// would hit (Same file / Same content /
+    /// Probably the same — please check / no match)
+    /// with reasons, and store nothing.
+    Check {
+        file: PathBuf,
+        #[arg(long)]
+        store: Option<PathBuf>,
     },
 }
 
@@ -648,6 +690,53 @@ fn run(cli: Cli) -> Result<(), String> {
             println!("{}", duplicates_report(&idx));
             Ok(())
         }
+        Cmd::Snippets { action } => {
+            match action {
+                SnippetsCmd::List { store } => {
+                    let (store_path, _, _) = snippet_paths(store);
+                    let store = ob_snippets::SnippetStore::load(&store_path)?;
+                    for line in snippets_list_lines(&store, &store_path) {
+                        println!("{line}");
+                    }
+                }
+                SnippetsCmd::Keep {
+                    file,
+                    kind,
+                    name,
+                    store,
+                } => {
+                    let (store_path, bytes_dir, index_path) = snippet_paths(store);
+                    match snippets_keep(
+                        &store_path,
+                        &bytes_dir,
+                        &index_path,
+                        &file,
+                        &kind,
+                        name.as_deref(),
+                    )? {
+                        SnippetKeepOutcome::Kept(line) => println!("{line}"),
+                        SnippetKeepOutcome::AlreadyKept(line) => println!("{line}"),
+                        SnippetKeepOutcome::Ask(lines) => {
+                            for line in &lines {
+                                println!("{line}");
+                            }
+                            return Err(format!(
+                                "not stored: {} looks like a snippet already in the library — \
+                                 please check before keeping it",
+                                file.display()
+                            ));
+                        }
+                    }
+                }
+                SnippetsCmd::Check { file, store } => {
+                    let (store_path, bytes_dir, index_path) = snippet_paths(store);
+                    for line in snippets_check(&store_path, &bytes_dir, &index_path, &file)? {
+                        println!("{line}");
+                    }
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -849,6 +938,286 @@ fn duplicates_report(index: &ob_fingerprint::matching::FingerprintIndex) -> Stri
         lines.push("no duplicates found".to_string());
     }
     lines.join("\n")
+}
+
+/// The snippet store's three paths: the store file,
+/// the content-bytes folder, and the fingerprint index
+/// beside it. An explicit --store puts the bytes folder
+/// and the index beside that file; otherwise all three
+/// are the computed library defaults, the fonts
+/// pattern (there is no default path for
+/// fingerprints.json — the index default is computed
+/// here from the same library home).
+fn snippet_paths(store: Option<PathBuf>) -> (PathBuf, PathBuf, PathBuf) {
+    match store {
+        Some(path) => {
+            let bytes_dir = path
+                .parent()
+                .map(|parent| parent.join("snippets"))
+                .unwrap_or_else(|| PathBuf::from("snippets"));
+            let index_path = path
+                .parent()
+                .map(|parent| parent.join("fingerprints.json"))
+                .unwrap_or_else(|| PathBuf::from("fingerprints.json"));
+            (path, bytes_dir, index_path)
+        }
+        None => (
+            ob_snippets::default_store_path(),
+            ob_snippets::default_bytes_dir(),
+            ob_fingerprint::matching::default_index_path(),
+        ),
+    }
+}
+
+/// The kind word the office uses, for the list line.
+fn snippet_kind_word(kind: ob_snippets::SnippetKind) -> &'static str {
+    match kind {
+        ob_snippets::SnippetKind::Picture => "picture",
+        ob_snippets::SnippetKind::Music => "song",
+        ob_snippets::SnippetKind::Text => "text",
+    }
+}
+
+/// The --kind word back to the store kind.
+fn snippet_kind_from_word(word: &str) -> ob_snippets::SnippetKind {
+    match word {
+        "picture" => ob_snippets::SnippetKind::Picture,
+        "song" => ob_snippets::SnippetKind::Music,
+        _ => ob_snippets::SnippetKind::Text,
+    }
+}
+
+/// The credit line the list shows under a snippet's
+/// name: the record's own credit words when it has
+/// them, else title and creator, else the file it was
+/// kept from. Mirrors the picker's line in the app.
+fn snippet_credit_line(record: &ob_snippets::SnippetRecord) -> String {
+    let rights = &record.asset.rights;
+    if !rights.credit_text.is_empty() {
+        rights.credit_text.clone()
+    } else if !rights.title.is_empty() && !rights.creator.is_empty() {
+        format!("{} — {}", rights.title, rights.creator)
+    } else if !rights.title.is_empty() {
+        rights.title.clone()
+    } else if !rights.creator.is_empty() {
+        rights.creator.clone()
+    } else {
+        format!("From {}", record.source)
+    }
+}
+
+/// The list lines for a loaded store: one per snippet,
+/// name + kind + credit line; one line saying so when
+/// the library is empty.
+fn snippets_list_lines(store: &ob_snippets::SnippetStore, store_path: &Path) -> Vec<String> {
+    if store.snippets.is_empty() {
+        return vec![format!(
+            "the snippet library is empty ({})",
+            store_path.display()
+        )];
+    }
+    store
+        .snippets
+        .iter()
+        .map(|record| {
+            format!(
+                "{} | {} | {}",
+                record.name,
+                snippet_kind_word(record.kind),
+                snippet_credit_line(record)
+            )
+        })
+        .collect()
+}
+
+/// Build the keep input for a file the CLI keeps or
+/// checks: the file name is the source and the default
+/// name, the kept date is today, asserted_by is empty,
+/// and the rights start from the source file alone
+/// (a bare file carries no credit of its own).
+fn snippet_keep_input(
+    bytes: Vec<u8>,
+    kind: ob_snippets::SnippetKind,
+    name: &str,
+    source: &str,
+) -> ob_snippets::KeepInput {
+    let media_type = match kind {
+        ob_snippets::SnippetKind::Picture => ob_image::sniff(&bytes).media_type().to_string(),
+        ob_snippets::SnippetKind::Music => "application/vnd.recordare.musicxml+xml".to_string(),
+        ob_snippets::SnippetKind::Text => "text/plain".to_string(),
+    };
+    let today = chrono::Local::now().date_naive();
+    use chrono::Datelike;
+    ob_snippets::KeepInput {
+        content: bytes,
+        kind,
+        name: name.to_string(),
+        source: source.to_string(),
+        kept_at: format!(
+            "{:04}-{:02}-{:02}",
+            today.year(),
+            today.month(),
+            today.day()
+        ),
+        asserted_by: String::new(),
+        media_type,
+        rights: ob_model::RightsRecord {
+            source: source.to_string(),
+            ..Default::default()
+        },
+        spoken_only: false,
+        web_hidden: false,
+    }
+}
+
+/// What a CLI keep decided. The Ask carries its
+/// proposal lines so the caller can print them before
+/// refusing: a NeedsCheck proposal is reported, never
+/// silently stored or skipped.
+#[derive(Debug)]
+enum SnippetKeepOutcome {
+    Kept(String),
+    AlreadyKept(String),
+    Ask(Vec<String>),
+}
+
+/// Keep one file into the store, through the same
+/// `decide_keep` + `store_snippet` path as the review
+/// window's tick (same dedupe, same Ask behaviour as
+/// the CLI can express). A stored dismissal is
+/// honoured by the decision itself. Loud errors, never
+/// silent: a missing file, a damaged store, an
+/// undecodable picture, an unparsable song, non-UTF-8
+/// text.
+fn snippets_keep(
+    store_path: &Path,
+    bytes_dir: &Path,
+    index_path: &Path,
+    file: &Path,
+    kind_word: &str,
+    name: Option<&str>,
+) -> Result<SnippetKeepOutcome, String> {
+    let bytes = ob_extract::read_open_door_file(file)?;
+    let file_name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unnamed".to_string());
+    let name = match name {
+        Some(n) if !n.trim().is_empty() => n.to_string(),
+        _ => file_name.clone(),
+    };
+    let kind = snippet_kind_from_word(kind_word);
+    let input = snippet_keep_input(bytes, kind, &name, &file_name);
+    let mut store = ob_snippets::SnippetStore::load(store_path)?;
+    let mut index = ob_fingerprint::matching::FingerprintIndex::load(index_path)?;
+    let content = input.content.clone();
+    match ob_snippets::decide_keep(&input, &store, &index, bytes_dir)? {
+        ob_snippets::KeepDecision::AlreadyKept { id } => {
+            let kept_name = store
+                .get(&id)
+                .map(|record| record.name.clone())
+                .unwrap_or_else(|| id.clone());
+            Ok(SnippetKeepOutcome::AlreadyKept(format!(
+                "already kept as {kept_name} ({})",
+                snippet_kind_word(kind)
+            )))
+        }
+        ob_snippets::KeepDecision::ReadyToStore { record } => {
+            let kept_name = record.name.clone();
+            ob_snippets::store_snippet(
+                &mut store, &mut index, record, &content, bytes_dir, store_path, index_path,
+            )?;
+            Ok(SnippetKeepOutcome::Kept(format!(
+                "kept {kept_name} ({})",
+                snippet_kind_word(kind)
+            )))
+        }
+        ob_snippets::KeepDecision::Ask { proposals, .. } => {
+            let mut lines = vec!["Probably the same — please check:".to_string()];
+            for (proposal, name) in &proposals {
+                lines.push(format!(
+                    "  {name}: {} — {}",
+                    proposal.title, proposal.reason
+                ));
+            }
+            Ok(SnippetKeepOutcome::Ask(lines))
+        }
+    }
+}
+
+/// Route a check file by content, the way
+/// `fingerprint_entry` routes it: pictures by magic
+/// bytes, music by extension, anything else as
+/// readable text. Garbage fails loudly, never as a
+/// silent wrong kind.
+fn route_snippet_kind(bytes: &[u8], path: &Path) -> Result<ob_snippets::SnippetKind, String> {
+    if ob_image::sniff(bytes).decodable() {
+        return Ok(ob_snippets::SnippetKind::Picture);
+    }
+    let is_music = path.extension().map(|e| {
+        e.eq_ignore_ascii_case("musicxml")
+            || e.eq_ignore_ascii_case("xml")
+            || e.eq_ignore_ascii_case("mxl")
+    });
+    if is_music.unwrap_or(false) {
+        return Ok(ob_snippets::SnippetKind::Music);
+    }
+    if std::str::from_utf8(bytes).is_ok() {
+        return Ok(ob_snippets::SnippetKind::Text);
+    }
+    Err("that file is not a picture, a music file, or readable text".to_string())
+}
+
+/// Dedupe check only: report the tier the file would
+/// hit, with reasons, and store nothing. Same file
+/// (identical bytes already kept) and Same content
+/// (the same content under another name) are told
+/// apart by the stored bytes; a NeedsCheck proposal
+/// prints its reason; no match says so plainly.
+fn snippets_check(
+    store_path: &Path,
+    bytes_dir: &Path,
+    index_path: &Path,
+    file: &Path,
+) -> Result<Vec<String>, String> {
+    let bytes = ob_extract::read_open_door_file(file)?;
+    let file_name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unnamed".to_string());
+    let kind = route_snippet_kind(&bytes, file)?;
+    let sha = ob_fingerprint::sha256_hex(&bytes);
+    let input = snippet_keep_input(bytes, kind, &file_name, &file_name);
+    let store = ob_snippets::SnippetStore::load(store_path)?;
+    let index = ob_fingerprint::matching::FingerprintIndex::load(index_path)?;
+    match ob_snippets::decide_keep(&input, &store, &index, bytes_dir)? {
+        ob_snippets::KeepDecision::AlreadyKept { id } => {
+            let kept_name = store
+                .get(&id)
+                .map(|record| record.name.clone())
+                .unwrap_or_else(|| id.clone());
+            if store.contains(&sha) {
+                Ok(vec![format!("Same file: already kept as {kept_name}")])
+            } else {
+                Ok(vec![format!(
+                    "Same content: matches the kept snippet {kept_name}"
+                )])
+            }
+        }
+        ob_snippets::KeepDecision::ReadyToStore { .. } => Ok(vec![
+            "no match: nothing in the library matches this file".to_string(),
+        ]),
+        ob_snippets::KeepDecision::Ask { proposals, .. } => {
+            let mut lines = vec!["Probably the same — please check:".to_string()];
+            for (proposal, name) in &proposals {
+                lines.push(format!(
+                    "  {name}: {} — {}",
+                    proposal.title, proposal.reason
+                ));
+            }
+            Ok(lines)
+        }
+    }
 }
 
 /// The trace rescue: render the old PDF's pages to pictures with
@@ -1096,5 +1465,489 @@ mod tests {
         let report = duplicates_report(&index);
         assert!(!report.contains("cross-copy.png"));
         assert!(report.contains("1 pairs marked not duplicates"));
+    }
+
+    fn snippets_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn snippets_paths(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        (
+            dir.join("snippets.json"),
+            dir.join("snippets"),
+            dir.join("fingerprints.json"),
+        )
+    }
+
+    /// A PNG built from a pixel function, so the tests
+    /// need no fixture files.
+    fn snippets_png_bytes(w: u32, h: u32, pixel: impl Fn(u32, u32) -> (u8, u8, u8)) -> Vec<u8> {
+        use image::{ImageBuffer, Rgb};
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(w, h, |x, y| {
+            let (r, g, b) = pixel(x, y);
+            Rgb([r, g, b])
+        });
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .expect("PNG encode works");
+        bytes
+    }
+
+    /// A busy 32x32 grey picture: plenty of hash signal,
+    /// so a small change stays inside the bands.
+    fn snippets_busy_picture() -> Vec<u8> {
+        snippets_png_bytes(32, 32, |x, y| {
+            let v = ((x * 7 + y * 13 + x * y * 3) % 256) as u8;
+            (v, v, v)
+        })
+    }
+
+    /// The same picture with a 6x6 block brightened: a
+    /// near-duplicate, not the same bytes.
+    fn snippets_busy_picture_near() -> Vec<u8> {
+        snippets_png_bytes(32, 32, |x, y| {
+            let mut v = ((x * 7 + y * 13 + x * y * 3) % 256) as u8;
+            if (10..16).contains(&x) && (10..16).contains(&y) {
+                v = v.saturating_add(40);
+            }
+            (v, v, v)
+        })
+    }
+
+    fn snippets_music_note(step: &str, alter: &str, octave: u8, dur: u32, ntype: &str) -> String {
+        let alter_xml = if alter.is_empty() {
+            String::new()
+        } else {
+            format!("<alter>{alter}</alter>")
+        };
+        format!(
+            "<note><pitch><step>{step}</step>{alter_xml}<octave>{octave}</octave></pitch>\
+             <duration>{dur}</duration><type>{ntype}</type></note>"
+        )
+    }
+
+    fn snippets_scale_c_xml() -> String {
+        let mut notes = String::new();
+        for (s, o) in [
+            ("C", 4),
+            ("D", 4),
+            ("E", 4),
+            ("F", 4),
+            ("G", 4),
+            ("A", 4),
+            ("B", 4),
+        ] {
+            notes.push_str(&snippets_music_note(s, "", o, 4, "quarter"));
+        }
+        format!(
+            r#"<?xml version="1.0"?><score-partwise>
+            <part-list><score-part id="P1"><part-name>V</part-name></score-part></part-list>
+            <part id="P1"><measure><attributes><divisions>4</divisions>
+            <key><fifths>0</fifths><mode>major</mode></key></attributes>
+            {notes}
+            </measure></part></score-partwise>"#
+        )
+    }
+
+    /// The same scale with divisions rescaled 4 -> 480:
+    /// different bytes, same canonical content.
+    fn snippets_scale_c_rescaled_xml() -> String {
+        let mut notes = String::new();
+        for (s, o) in [
+            ("C", 4),
+            ("D", 4),
+            ("E", 4),
+            ("F", 4),
+            ("G", 4),
+            ("A", 4),
+            ("B", 4),
+        ] {
+            notes.push_str(&format!(
+                "<note><pitch><step>{s}</step><octave>{o}</octave></pitch>\
+                 <duration>480</duration><type>quarter</type></note>"
+            ));
+        }
+        format!(
+            r#"<?xml version="1.0"?><score-partwise>
+            <part-list><score-part id="P1"><part-name>V</part-name></score-part></part-list>
+            <part id="P1"><measure><attributes><divisions>480</divisions></attributes>
+            {notes}
+            </measure></part></score-partwise>"#
+        )
+    }
+
+    #[test]
+    fn snippets_keep_stores_and_lists() {
+        let dir = snippets_test_dir("ob-cli-snippets-list-test");
+        let (store_path, bytes_dir, index_path) = snippets_paths(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let file = dir.join("welcome.txt");
+        let content = b"Lord, in your mercy hear our prayer";
+        std::fs::write(&file, content).expect("write text");
+        let kept = snippets_keep(
+            &store_path,
+            &bytes_dir,
+            &index_path,
+            &file,
+            "text",
+            Some("Welcome"),
+        )
+        .expect("keep works");
+        assert!(matches!(kept, SnippetKeepOutcome::Kept(_)));
+        let store = ob_snippets::SnippetStore::load(&store_path).expect("store reloads");
+        assert_eq!(store.snippets.len(), 1);
+        assert_eq!(store.snippets[0].name, "Welcome");
+        assert_eq!(store.snippets[0].source, "welcome.txt");
+        let bytes_file = bytes_dir.join(&store.snippets[0].id);
+        assert_eq!(std::fs::read(&bytes_file).expect("bytes written"), content);
+        let lines = snippets_list_lines(&store, &store_path);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("Welcome"), "line: {}", lines[0]);
+        assert!(lines[0].contains("text"), "line: {}", lines[0]);
+        assert!(lines[0].contains("From welcome.txt"), "line: {}", lines[0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snippets_keep_same_bytes_twice_stores_one() {
+        let dir = snippets_test_dir("ob-cli-snippets-same-bytes-test");
+        let (store_path, bytes_dir, index_path) = snippets_paths(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let file = dir.join("busy.png");
+        std::fs::write(&file, snippets_busy_picture()).expect("write picture");
+        let first = snippets_keep(&store_path, &bytes_dir, &index_path, &file, "picture", None)
+            .expect("first keep works");
+        assert!(matches!(first, SnippetKeepOutcome::Kept(_)));
+        let second = snippets_keep(
+            &store_path,
+            &bytes_dir,
+            &index_path,
+            &file,
+            "picture",
+            Some("busy-again"),
+        )
+        .expect("second keep works");
+        assert!(
+            matches!(second, SnippetKeepOutcome::AlreadyKept(_)),
+            "second keep of the same bytes must report already kept"
+        );
+        let store = ob_snippets::SnippetStore::load(&store_path).expect("store reloads");
+        assert_eq!(store.snippets.len(), 1);
+        assert_eq!(store.snippets[0].name, "busy.png");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snippets_keep_retyped_text_and_rescaled_music_dedupe() {
+        let dir = snippets_test_dir("ob-cli-snippets-same-content-test");
+        let (store_path, bytes_dir, index_path) = snippets_paths(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let text = dir.join("prayer.txt");
+        std::fs::write(&text, b"Lord, in your mercy hear our prayer").expect("write text");
+        let first = snippets_keep(&store_path, &bytes_dir, &index_path, &text, "text", None)
+            .expect("keep works");
+        assert!(matches!(first, SnippetKeepOutcome::Kept(_)));
+        let retyped = dir.join("prayer-copy.txt");
+        std::fs::write(
+            &retyped,
+            "LORD,  in Your Mercy — hear our prayer!".as_bytes(),
+        )
+        .expect("write retype");
+        let second = snippets_keep(&store_path, &bytes_dir, &index_path, &retyped, "text", None)
+            .expect("retyped keep works");
+        assert!(
+            matches!(second, SnippetKeepOutcome::AlreadyKept(_)),
+            "retyped text must group on norm_hash"
+        );
+        let tune = dir.join("scale.musicxml");
+        std::fs::write(&tune, snippets_scale_c_xml()).expect("write tune");
+        let kept = snippets_keep(&store_path, &bytes_dir, &index_path, &tune, "song", None)
+            .expect("song keep works");
+        assert!(matches!(kept, SnippetKeepOutcome::Kept(_)));
+        let rescaled = dir.join("scale-copy.musicxml");
+        std::fs::write(&rescaled, snippets_scale_c_rescaled_xml()).expect("write rescaled");
+        let again = snippets_keep(
+            &store_path,
+            &bytes_dir,
+            &index_path,
+            &rescaled,
+            "song",
+            None,
+        )
+        .expect("rescaled keep works");
+        assert!(
+            matches!(again, SnippetKeepOutcome::AlreadyKept(_)),
+            "rescaled tune must group on canon_hash"
+        );
+        let store = ob_snippets::SnippetStore::load(&store_path).expect("store reloads");
+        assert_eq!(store.snippets.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snippets_check_reports_each_tier_without_storing() {
+        let dir = snippets_test_dir("ob-cli-snippets-check-test");
+        let (store_path, bytes_dir, index_path) = snippets_paths(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let long = dir.join("prayer-long.txt");
+        let long_text =
+            "Lord, in your mercy hear our prayer for all who are sick and in need today";
+        std::fs::write(&long, long_text).expect("write long text");
+        snippets_keep(
+            &store_path,
+            &bytes_dir,
+            &index_path,
+            &long,
+            "text",
+            Some("prayer-long"),
+        )
+        .expect("keep works");
+        let short = dir.join("prayers.txt");
+        std::fs::write(&short, b"we pray for the sick").expect("write short text");
+        snippets_keep(
+            &store_path,
+            &bytes_dir,
+            &index_path,
+            &short,
+            "text",
+            Some("prayers"),
+        )
+        .expect("keep works");
+        // Same bytes: Same file.
+        let same =
+            snippets_check(&store_path, &bytes_dir, &index_path, &long).expect("check works");
+        assert_eq!(same.len(), 1);
+        assert!(same[0].starts_with("Same file"), "report: {}", same[0]);
+        assert!(same[0].contains("prayer-long"), "report: {}", same[0]);
+        // Retyped: Same content.
+        let retyped = dir.join("prayer-long-copy.txt");
+        std::fs::write(
+            &retyped,
+            "LORD, in Your Mercy — hear our prayer for all who are sick and in need today!",
+        )
+        .expect("write retype");
+        let content =
+            snippets_check(&store_path, &bytes_dir, &index_path, &retyped).expect("check works");
+        assert_eq!(content.len(), 1);
+        assert!(
+            content[0].starts_with("Same content"),
+            "report: {}",
+            content[0]
+        );
+        // Unrelated: no match.
+        let other = dir.join("other.txt");
+        std::fs::write(
+            &other,
+            b"The coffee morning is on Tuesday in the parish hall with cake and tea",
+        )
+        .expect("write other");
+        let none =
+            snippets_check(&store_path, &bytes_dir, &index_path, &other).expect("check works");
+        assert_eq!(none.len(), 1);
+        assert!(none[0].starts_with("no match"), "report: {}", none[0]);
+        // Short near-duplicate: Probably the same, with the diff.
+        let near = dir.join("prayers-ill.txt");
+        std::fs::write(&near, b"we pray for the ill").expect("write near text");
+        let ask = snippets_check(&store_path, &bytes_dir, &index_path, &near).expect("check works");
+        assert!(
+            ask[0].starts_with("Probably the same"),
+            "report: {}",
+            ask[0]
+        );
+        assert!(
+            ask.iter().any(|line| line.contains("prayers")),
+            "report: {ask:?}"
+        );
+        assert!(
+            ask.iter().any(|line| line.contains("sick")),
+            "report: {ask:?}"
+        );
+        // Checks stored nothing.
+        let store = ob_snippets::SnippetStore::load(&store_path).expect("store reloads");
+        assert_eq!(store.snippets.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snippets_keep_reports_a_needs_check_proposal_without_storing() {
+        let dir = snippets_test_dir("ob-cli-snippets-keep-ask-test");
+        let (store_path, bytes_dir, index_path) = snippets_paths(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let base = dir.join("busy.png");
+        let base_bytes = snippets_busy_picture();
+        std::fs::write(&base, &base_bytes).expect("write base");
+        snippets_keep(&store_path, &bytes_dir, &index_path, &base, "picture", None)
+            .expect("keep works");
+        let near = dir.join("busy-near.png");
+        let near_bytes = snippets_busy_picture_near();
+        assert_ne!(near_bytes, base_bytes);
+        std::fs::write(&near, &near_bytes).expect("write near");
+        let outcome = snippets_keep(&store_path, &bytes_dir, &index_path, &near, "picture", None)
+            .expect("near keep decides");
+        let lines = match outcome {
+            SnippetKeepOutcome::Ask(lines) => lines,
+            other => panic!("near-duplicate keep must Ask, got {other:?}"),
+        };
+        assert!(
+            lines[0].starts_with("Probably the same"),
+            "lines: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("busy.png")),
+            "lines: {lines:?}"
+        );
+        let store = ob_snippets::SnippetStore::load(&store_path).expect("store reloads");
+        assert_eq!(store.snippets.len(), 1);
+        assert!(
+            !bytes_dir
+                .join(ob_fingerprint::sha256_hex(&near_bytes))
+                .exists(),
+            "the near-duplicate bytes must not be stored"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snippets_loud_errors() {
+        let dir = snippets_test_dir("ob-cli-snippets-loud-errors-test");
+        let (store_path, bytes_dir, index_path) = snippets_paths(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        // Missing file.
+        let missing = dir.join("no-such-file.txt");
+        let err = snippets_keep(&store_path, &bytes_dir, &index_path, &missing, "text", None)
+            .expect_err("missing file must be loud");
+        assert!(!err.is_empty(), "error is empty");
+        // Damaged store.
+        let file = dir.join("note.txt");
+        std::fs::write(&file, b"Lord, hear our prayer").expect("write text");
+        std::fs::write(&store_path, "{not json").expect("damage the store");
+        let err = snippets_keep(&store_path, &bytes_dir, &index_path, &file, "text", None)
+            .expect_err("damaged store must be loud");
+        assert!(err.contains("damaged"), "error is {err}");
+        let err = snippets_check(&store_path, &bytes_dir, &index_path, &file)
+            .expect_err("damaged store must be loud on check");
+        assert!(err.contains("damaged"), "error is {err}");
+        std::fs::remove_file(&store_path).expect("clear the damage");
+        // Undecodable picture.
+        let bad_pic = dir.join("bad.png");
+        std::fs::write(&bad_pic, b"not a picture").expect("write bad picture");
+        let err = snippets_keep(
+            &store_path,
+            &bytes_dir,
+            &index_path,
+            &bad_pic,
+            "picture",
+            None,
+        )
+        .expect_err("undecodable picture must be loud");
+        assert!(err.contains("decode"), "error is {err}");
+        // Unparsable song.
+        let bad_tune = dir.join("bad.musicxml");
+        std::fs::write(&bad_tune, b"not musicxml at all").expect("write bad tune");
+        let err = snippets_keep(
+            &store_path,
+            &bytes_dir,
+            &index_path,
+            &bad_tune,
+            "song",
+            None,
+        )
+        .expect_err("unparsable song must be loud");
+        assert!(!err.is_empty(), "error is empty");
+        // Non-UTF-8 text.
+        let bad_text = dir.join("bad.txt");
+        std::fs::write(&bad_text, [0xff, 0xfe, 0xfd]).expect("write bad text");
+        let err = snippets_keep(
+            &store_path,
+            &bytes_dir,
+            &index_path,
+            &bad_text,
+            "text",
+            None,
+        )
+        .expect_err("non-UTF-8 text must be loud");
+        assert!(err.contains("UTF-8"), "error is {err}");
+        // Garbage check: none of the three kinds.
+        let blob = dir.join("blob.bin");
+        std::fs::write(&blob, [0xff, 0xfe, 0x00]).expect("write blob");
+        let err = snippets_check(&store_path, &bytes_dir, &index_path, &blob)
+            .expect_err("garbage check must be loud");
+        assert!(err.contains("not a picture"), "error is {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snippets_run_wiring() {
+        // Drive the real dispatch arms: list on an empty
+        // store, keep, check, and a keep that Asks (an
+        // error, with nothing stored).
+        let dir = snippets_test_dir("ob-cli-snippets-run-test");
+        let (store_path, _, _) = snippets_paths(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let list = run(Cli {
+            cmd: Cmd::Snippets {
+                action: SnippetsCmd::List {
+                    store: Some(store_path.clone()),
+                },
+            },
+        });
+        assert!(list.is_ok(), "list on an empty store works");
+        let file = dir.join("note.txt");
+        std::fs::write(&file, b"Lord, hear our prayer").expect("write text");
+        let keep = run(Cli {
+            cmd: Cmd::Snippets {
+                action: SnippetsCmd::Keep {
+                    file: file.clone(),
+                    kind: "text".to_string(),
+                    name: Some("note".to_string()),
+                    store: Some(store_path.clone()),
+                },
+            },
+        });
+        assert!(keep.is_ok(), "keep works");
+        let check = run(Cli {
+            cmd: Cmd::Snippets {
+                action: SnippetsCmd::Check {
+                    file: file.clone(),
+                    store: Some(store_path.clone()),
+                },
+            },
+        });
+        assert!(check.is_ok(), "check works");
+        let base = dir.join("busy.png");
+        std::fs::write(&base, snippets_busy_picture()).expect("write base");
+        let keep_pic = run(Cli {
+            cmd: Cmd::Snippets {
+                action: SnippetsCmd::Keep {
+                    file: base.clone(),
+                    kind: "picture".to_string(),
+                    name: None,
+                    store: Some(store_path.clone()),
+                },
+            },
+        });
+        assert!(keep_pic.is_ok(), "picture keep works");
+        let near = dir.join("busy-near.png");
+        std::fs::write(&near, snippets_busy_picture_near()).expect("write near");
+        let ask = run(Cli {
+            cmd: Cmd::Snippets {
+                action: SnippetsCmd::Keep {
+                    file: near.clone(),
+                    kind: "picture".to_string(),
+                    name: None,
+                    store: Some(store_path.clone()),
+                },
+            },
+        });
+        assert!(ask.is_err(), "a keep that Asks must fail the command");
+        let store = ob_snippets::SnippetStore::load(&store_path).expect("store reloads");
+        assert_eq!(store.snippets.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

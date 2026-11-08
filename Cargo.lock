@@ -3363,6 +3363,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "clap",
+ "image",
  "ob-extract",
  "ob-fingerprint",
  "ob-fonts",
@@ -3372,6 +3373,7 @@ dependencies = [
  "ob-layout",
  "ob-model",
  "ob-pdf",
+ "ob-snippets",
  "ob-text",
  "serde_json",
 ]

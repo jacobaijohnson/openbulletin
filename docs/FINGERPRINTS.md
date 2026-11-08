@@ -198,16 +198,85 @@ The app owns the path and hands it to the index.
   that needs its words compared by hand, and every
   stale entry waiting on a recompute. Files already in
   the index are skipped, never entered twice.
+- `openbulletin-cli snippets list [--store <path>]`:
+  the kept snippets, name + kind + credit line.
+- `openbulletin-cli snippets keep <file> --kind
+  picture|song|text --name <name> [--store <path>]`:
+  keep a file into the store through the same keep
+  decision as the review window's tick. A
+  near-duplicate is reported, never silently stored
+  or skipped.
+- `openbulletin-cli snippets check <file>
+  [--store <path>]`: the dedupe tier the file would
+  hit, and nothing stored.
+
+## Reusable snippets
+
+When an old bulletin is imported, the pieces worth
+keeping — a picture, a song, a well-written
+announcement — can stay in the church's own library
+with their credit attached, instead of living only
+inside that one bulletin. The import review window is
+the single hook: a "Keep in the library" tick beside
+each review line covers all formats. The
+library-import funnel concept stands; its first
+instance is this hook, not a new pipeline.
+
+- **Store shape.** `snippets.json` plus a
+  content-addressed bytes folder, in
+  `<base>/OpenBulletin/`, beside `fingerprints.json`.
+  The store file is versioned `snippets-v1`. A
+  missing file is an empty library; a damaged file is
+  a loud error.
+- **Keep semantics.** The tick executes immediately:
+  bytes are copied into the store the moment the
+  admin ticks, not at the end of the import. A ticked
+  keep survives Cancel; unticked items store
+  nothing. Nothing is kept unless the admin says so.
+- **Dedupe.** Keeping reuses the fingerprint index.
+  Exact tiers (Same file / Same content) store no
+  second copy. A NeedsCheck near-duplicate asks, and
+  a stored dismissal is honoured — the pair is never
+  re-proposed.
+- **Picker reuse.** A picked snippet is copied into
+  the document's asset store, clips-style, never a
+  live link. Pictures go into the selected frame,
+  songs place like a clip into a music-capable frame
+  (or create one), announcements insert as a new
+  story.
+- **Rights carried end to end.** A kept snippet
+  carries the FULL rights record, including
+  `child_web_permission` and `licensor_ref`, and
+  reuse reproduces the same credit, permission, and
+  Check behaviour.
+- **Stale fingerprints.** A snippet whose
+  `fp_version` is stale never matches for dedupe and
+  is listed for recompute from the stored original —
+  the store holds the original, so recompute is
+  always possible.
+- **No document schema change.** A reused snippet
+  becomes ordinary document content, exactly like a
+  placed clip. `format_version` stays 1.
+- **Provenance is source + kept date + asserted_by
+  only.** The store records NO reuse history: it
+  never learns which bulletins reused a snippet,
+  against the fingerprint rule above.
+- **Songs are MusicXML imports only in v1.** Editor
+  hymn rows are out: their license lives in
+  `HymnMemory`, beside settings, not in any document
+  or asset, and carrying it needs its own design. A
+  song snippet that silently lost its permission line
+  would be worse than no song snippet.
 
 ## Still open (follow-ups, not findings)
 
-- **App import seam.** The GUI import door has no
-  single funnel today: reads land at many call sites
-  in the app, and the document asset funnel is the
-  wrong layer for library index I/O. The seam needs a
-  library-import funnel first, as part of the
-  Duplicates view build. The CLI covers the engine
-  end to end meanwhile.
+- **App import seam — settled.** The GUI import door
+  has its single hook: the import review window, where
+  the "Keep in the library" step lives and covers all
+  formats. The library-import funnel's first instance
+  is this hook, not a new pipeline. (An earlier draft
+  of this note said there was no single funnel; the
+  review window is that funnel.)
 - **Duplicates view in the GUI.** The engine, tiers,
   index, and CLI report are built; the in-app proposal
   view (with the shared-passage display and the

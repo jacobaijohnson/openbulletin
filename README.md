@@ -71,8 +71,20 @@ This is early software (version 0.1). Here is the honest list.
   the copy could not carry.
 - **A command line tool** for people who like typing commands: `new`,
   `export`, `export-idml`, `export-sla`, `export-md`, `export-html`,
-  `next-sunday`, `info`, `fonts`, `trace`.
+  `next-sunday`, `info`, `fonts`, `trace`, `fingerprint`, `snippets`.
   The engine underneath the app is real and tested.
+- **Reusable snippets.** At import review, tick "Keep in the library"
+  on a picture, a song, or an announcement paragraph, and reuse it
+  later from the Snippets picker. Near-duplicates are spotted by
+  fingerprint and asked about, never merged silently.
+- **Part proofs and approval marks.** On the Print step, save a
+  one-page reading copy of one contribution part; each part shows an
+  approval mark that clears itself when the part's words change.
+- **A licensing report.** Roll up CCLI and ONE LICENSE uses from a
+  folder of past bulletins, with songs missing a license number named.
+- **Content fingerprinting.** Pictures, music, and text are recognised
+  by what they contain, not by their file name, so duplicates are
+  caught even when the file was renamed.
 
 ### Fonts today
 
@@ -90,19 +102,24 @@ This is early software (version 0.1). Here is the honest list.
   panel has a picker per style, and it takes effect everywhere at
   once. Fonts already on your computer can be copied in with one
   tap from the same panel, or added as files or zip packs.
-- **Fonts do not travel inside a bulletin file.** A style names its
-  font family; the face itself comes from the Font Library on the
-  computer that opens the file. If that library lacks a named font,
-  the bulletin still opens and prints in a free stand-in, and the
-  app says so out loud, never quietly: the import review and the
-  Check step both name the real font and the stand-in in use. Add
-  the real font in the Fonts panel and the bulletin uses it by
-  itself, with no editing.
+- **Fonts can travel inside a bulletin file, when the font's license
+  allows it.** A style names its font family; when the font's sharing
+  rights allow, the font file rides inside the `.obd` so the bulletin
+  looks the same on another computer. When a font may not travel, the
+  face comes from the Font Library on the computer that opens the
+  file. If that library lacks a named font, the bulletin still opens
+  and prints in a free stand-in, and the app says so out loud, never
+  quietly: the import review and the Check step both name the real
+  font and the stand-in in use. Add the real font in the Fonts panel
+  and the bulletin uses it by itself, with no editing.
 - **PDFs include the real fonts.** Print and reading PDFs embed the
   same font files the layout measured with (when the font's license
   lets it travel), so what the Check step measured is what prints.
   A letter prints whenever the font chosen for it carries that
   letter; the Check step warns, naming the letter, when it does not.
+  One limit for now: a font carried inside the file shows on screen
+  with the real face, but the printed PDF may use a stand-in face
+  for that font.
 
 ### Not built yet
 
@@ -116,11 +133,12 @@ Plans and order of work: [ROADMAP.md](ROADMAP.md).
 
 ## Run it
 
-On Windows there is a ready bundle: one zip holding the app, its PDF
-reader program, its music program, and the PDF library in a single
-folder. Unzip it anywhere and
-run `openbulletin.exe`; there is nothing to install. (Bundles are
-attached to releases and to the "Windows bundle" workflow runs.)
+On Windows, download the latest release:
+https://github.com/jacobaijohnson/openbulletin/releases/tag/v0.1.0
+— one zip holding the app, its PDF reader program, its music program,
+and the PDF library in a single folder. Unzip it anywhere and
+run `openbulletin.exe`; there is nothing to install. (Bundles are also
+attached to the "Windows bundle" workflow runs.)
 Building from source needs Rust 1.80+ (install via rustup), then:
 
 ```sh
@@ -152,9 +170,11 @@ desktop app, CLI, or (someday) web.
 | `ob-pdf` | Makes the PDFs: reading copies and print sheets, with the real fonts embedded. |
 | `ob-image` | Opens the picture files (PNG, JPEG, WebP, GIF, BMP, TIFF, SVG, JPEG XL) at the size each place needs. AVIF and HEIC are recognized and honestly refused as convert-first. |
 | `ob-extract` | Imports and exports: reads old bulletins (PDFs through the helper, Publisher files with our own reader or the LibreOffice bridge, InDesign IDML, Scribus, Markdown, web pages, MusicXML) into one shared dump the Template Analyzer learns from, and writes documents back out as IDML for InDesign, as a Scribus file, as Markdown, or as a web page. |
-| `ob-format` | Reads and writes `.obd` files. The format is version 1: a zip holding the document as JSON plus each picture file under its own fingerprint, checked on open. Font files do not travel inside it: a style names its font, and the Font Library on the computer opening the file supplies the face. Older files migrate on open and save as version 1. |
+| `ob-format` | Reads and writes `.obd` files. The format is version 1: a zip holding the document as JSON plus each picture file under its own fingerprint, checked on open. Font files travel inside it when the font's license allows; otherwise a style names its font, and the Font Library on the computer opening the file supplies the face. Older files migrate on open and save as version 1. |
 | `ob-fonts` | The Font Library: one folder of fonts the app owns, each font's sharing rights read from the file itself, the catalog of free fonts it can fetch when asked, and the table that matches a font a bulletin names to the free twin or lookalike that stands in for it. |
 | `ob-clips` | The clip art library: collections the church adds, copied into one managed folder, with thumbnails and the hand-checked starter set. |
+| `ob-fingerprint` | Recognises pictures, music, and text by what they contain (fingerprints, not file names), with worded tiers for same content and a library-side index. |
+| `ob-snippets` | The reusable-snippets library: pictures, songs, and announcement paragraphs kept at import, deduped by fingerprint, reused through the Snippets picker. |
 | `ob-music` | Reads MusicXML scores: the notes, measures, words, and credits the music door counts before anything is drawn. |
 | `ob-pdfium-helper` | A small separate program that reads PDFs with the PDFium library and hands the words and pictures back as data. |
 | `ob-verovio-helper` | A small separate program that talks to the Verovio music engraver, draws the music at a measured staff size, and refuses anything drawn too small to sing from. |

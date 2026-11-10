@@ -31,6 +31,8 @@ small volunteer project can defend:
   questions. Paste from whatever tool you like.
 - **`.pub` export, `.indd` reading** — undocumented proprietary binaries;
   writing `.pub` would extend a dead format.
+- **QuarkXPress `.qxd`/`.qxp` writing** — undocumented proprietary binaries;
+  writing them would extend Quark's format, and the rescue door is read-only.
 - **Full PDF editing** — PDF is an output format. "Edit any PDF" is a
   separate, bottomless product.
 - **Scripting / plugin marketplace** — deferred until the API can be kept

@@ -7463,6 +7463,27 @@ impl App {
                 }
                 Err(e) => self.fail(format!("Could not open that file. ({e})")),
             },
+            "qxd" | "qxp" => {
+                // A QuarkXPress file picked directly: there is
+                // no native Quark reader, so the file itself
+                // cannot be read here. Refuse in plain words
+                // with the next steps, in Q9 order: PDF (direct
+                // from Quark 6, 2003, or later; older Quark via
+                // print-to-PDF), IDML from QuarkXPress 2024 or
+                // later, then QXPMarkz by name only.
+                let msg = "That QuarkXPress file cannot be opened here directly. \
+                     OpenBulletin has no reader for QuarkXPress files, so the file \
+                     itself cannot be read. Three ways forward, in order: open the \
+                     file in QuarkXPress and save or export it as a PDF, then open \
+                     that PDF here with \"Open an old bulletin...\" (direct PDF \
+                     export needs Quark 6, 2003, or later; with an older Quark, \
+                     print to PDF instead); if you have QuarkXPress 2024 or later, \
+                     export the print layout as IDML (File > Export As > IDML) \
+                     instead and open that IDML here; or use QXPMarkz \
+                     (markzware.com), a paid converter that turns a Quark file \
+                     into IDML.";
+                self.fail(msg.into());
+            }
             _ => {
                 // Sniff the first bytes: PDF says %PDF, an IDML
                 // is a zip (PK), a .pub is a compound file, a
@@ -7511,8 +7532,9 @@ impl App {
                 } else {
                     self.fail(
                         "That file does not look like a PDF, a Publisher file, an \
-                         InDesign (IDML) file, a Scribus file, a music file \
-                         (MusicXML), or a web page, so it cannot be brought in."
+                         InDesign (IDML) file, a QuarkXPress file, a Scribus file, \
+                         a music file (MusicXML), or a web page, so it cannot be \
+                         brought in."
                             .into(),
                     );
                 }

@@ -169,7 +169,7 @@ desktop app, CLI, or (someday) web.
 | `ob-text` | Measures and wraps text using real font shapes (parley), and builds dot-leader lines. Uses fonts given to it, never fonts found on your computer. |
 | `ob-pdf` | Makes the PDFs: reading copies and print sheets, with the real fonts embedded. |
 | `ob-image` | Opens the picture files (PNG, JPEG, WebP, GIF, BMP, TIFF, SVG, JPEG XL) at the size each place needs. AVIF and HEIC are recognized and honestly refused as convert-first. |
-| `ob-extract` | Imports and exports: reads old bulletins (PDFs through the helper, Publisher files with our own reader or the LibreOffice bridge, InDesign IDML, Scribus, Markdown, web pages, MusicXML) into one shared dump the Template Analyzer learns from, and writes documents back out as IDML for InDesign, as a Scribus file, as Markdown, or as a web page. |
+| `ob-extract` | Imports and exports: reads old bulletins (PDFs through the helper, Publisher files with our own reader or the LibreOffice bridge, InDesign IDML, Scribus, Markdown, web pages, MusicXML, QuarkXPress files through IDML or PDF export only, never natively) into one shared dump the Template Analyzer learns from, and writes documents back out as IDML for InDesign, as a Scribus file, as Markdown, or as a web page. |
 | `ob-format` | Reads and writes `.obd` files. The format is version 1: a zip holding the document as JSON plus each picture file under its own fingerprint, checked on open. Font files travel inside it when the font's license allows; otherwise a style names its font, and the Font Library on the computer opening the file supplies the face. Older files migrate on open and save as version 1. |
 | `ob-fonts` | The Font Library: one folder of fonts the app owns, each font's sharing rights read from the file itself, the catalog of free fonts it can fetch when asked, and the table that matches a font a bulletin names to the free twin or lookalike that stands in for it. |
 | `ob-clips` | The clip art library: collections the church adds, copied into one managed folder, with thumbnails and the hand-checked starter set. |
@@ -212,6 +212,29 @@ Honest labels, in plain words:
 - **Scribus (`.sla`) files open through the same door**: words,
   boxes, and fonts come over as a draft to review; picture
   frames are counted and named in the review, not carried.
+- **QuarkXPress (`.qxd`, `.qxp`) files need exporting first.**
+  OpenBulletin has no native Quark reader: the files are
+  undocumented proprietary binaries. Export from Quark first,
+  in one of two ways. From QuarkXPress 2024 or later, export
+  the print layout as IDML (File, then Export as, then IDML)
+  and open that IDML here; this route is new and not yet
+  tested on a real church file, so check the draft against
+  the original. From Quark 6 (2003) or later, export the
+  print layout as a PDF and open that PDF here instead; from
+  Quark 5 or earlier, print to PDF, or make a PDF through
+  PostScript and Acrobat Distiller, then open that PDF here.
+  For very old files (QuarkXPress 3.x-6.x), Quark's free
+  Legacy Document Converter moves them to QuarkXPress 9.1
+  format, so a modern Quark can open them; it is only a
+  stepping stone, and you still need a modern Quark to
+  export IDML or PDF from there. A paid converter, QXPMarkz
+  (markzware.com), is another way to turn a Quark file into
+  IDML. Honest limits: a Quark file picked directly cannot
+  be read, and the app says so in plain words with these
+  next steps; an IDML export is a common-denominator copy,
+  so text shading is lost and some fonts may differ, and a
+  PDF keeps the exact look but its words arrive as a rescue
+  to check.
 - **Old bulletins can also teach the app your church's template**
   (Start step, "Learn from your old bulletins"): pick old
   bulletins in any mix of the kinds above. Learning needs at

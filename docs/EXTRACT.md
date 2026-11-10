@@ -186,6 +186,33 @@ character accuracy against hand-checked ground truth on real bulletins,
 100% detection of unreadable pages, and zero confident wrong sheet
 classifications.
 
+## QuarkXPress files: export first, then open here
+
+There is no native QuarkXPress reader: `.qxd` and `.qxp` are
+undocumented proprietary binaries, and no public parser covers
+the versions most church bulletins were made in. Export from
+Quark itself first, in one of two ways. From QuarkXPress 2024
+or later, export the print layout as IDML (File, then Export
+as, then IDML) and open that IDML here: it goes through the
+existing IDML door. This route is new and not yet tested on a
+real church file, so check the draft against the original.
+From Quark 6 (2003) or later, export the print layout as a
+PDF and open that PDF here: it comes in through the PDF door,
+with the exact look kept and the words arriving as a rescue
+to check. From Quark 5 or earlier, print to PDF, or make a
+PDF through PostScript and Acrobat Distiller, then open that
+PDF here. For very old files (QuarkXPress 3.x-6.x), Quark's
+free Legacy Document Converter moves them to QuarkXPress 9.1
+format, so a modern Quark can open them; it is only a
+stepping stone, and you still need a modern Quark to export
+IDML or PDF from there. A paid converter, QXPMarkz
+(markzware.com), is another way to turn a Quark file into
+IDML. A Quark file picked directly is refused in plain words,
+with these next steps in that order. Honest limits: an IDML
+export is a common-denominator copy, so text shading is lost
+and some fonts may differ; a PDF keeps the look but not the
+layout structure.
+
 ## First real corpus (2026-10-15, local only)
 
 Jacob provided 16 real bulletins from one church (Feb 2025 to Oct 2026:

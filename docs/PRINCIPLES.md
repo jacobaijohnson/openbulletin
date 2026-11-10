@@ -40,7 +40,7 @@
    (Apple's Forgiveness), and the app never moves, renames, or removes
    things on its own motion between visits (Apple's Perceived Stability).
 7. **Imports are rescues, not magic.** Publisher (.pub), InDesign (via
-   IDML), PDF, and our own .obd all open here, with honest fidelity
+   IDML), QuarkXPress (.qxd/.qxp, through IDML or PDF export), PDF, and our own .obd all open here, with honest fidelity
    labels. PDF analysis can draft a template from an old bulletin PDF;
    a human always confirms before it becomes the template.
 

@@ -41,7 +41,7 @@
    things on its own motion between visits (Apple's Perceived Stability).
 7. **Imports are rescues, not magic.** Publisher (.pub), InDesign (via
    IDML), QuarkXPress (.qxd/.qxp, through IDML or PDF export), PDF, and our own .obd all open here, with honest fidelity
-   labels. PDF analysis can draft a template from an old bulletin PDF;
+   labels. The QuarkXPress IDML route is new and not yet tested on a real church file. PDF analysis can draft a template from an old bulletin PDF;
    a human always confirms before it becomes the template.
 
 8. **Build isolation.** OpenBulletin never shares space with Jacob's other

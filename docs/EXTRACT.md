@@ -208,7 +208,7 @@ stepping stone, and you still need a modern Quark to export
 IDML or PDF from there. A paid converter, QXPMarkz
 (markzware.com), is another way to turn a Quark file into
 IDML. A Quark file picked directly is refused in plain words,
-with these next steps in that order. Honest limits: an IDML
+with these next steps. Honest limits: an IDML
 export is a common-denominator copy, so text shading is lost
 and some fonts may differ; a PDF keeps the look but not the
 layout structure.

@@ -8090,9 +8090,23 @@ mod settings_tests {
         // word "verified".
         let mut app = clean_app_with_template();
         app.doc.profile.name = "Grace Lutheran Church".to_string();
+        // The fixture bulletin is for the coming Sunday,
+        // the same Sunday the Check itself computes from
+        // the clock (check::date_verdict via
+        // sunday_on_or_after): a frozen date goes stale
+        // the next Sunday and the clean check fails.
+        use chrono::Datelike;
+        let sunday = sunday_on_or_after(chrono::Local::now().date_naive());
+        let sunday_iso = sunday.format("%Y-%m-%d").to_string();
+        let filed_for = ob_model::SimpleDate {
+            year: sunday.year(),
+            month: sunday.month(),
+            day: sunday.day(),
+        };
+        let filed_name = format!("sue - {sunday_iso} - abcd1234.md");
         app.doc
             .fields
-            .insert("occasion_date".to_string(), "2026-11-08".to_string());
+            .insert("occasion_date".to_string(), sunday_iso.clone());
         app.doc.no_announcements = true;
         // The template's hymn lines carry numbers without
         // titles, which Check flags on its own: empty
@@ -8111,23 +8125,26 @@ mod settings_tests {
             }
         }
         app.inbox_filed = vec![InboxItem {
-            path: std::path::PathBuf::from("filed/sue - 2026-11-08 - abcd1234.md"),
-            file_name: "sue - 2026-11-08 - abcd1234.md".to_string(),
+            path: std::path::PathBuf::from(format!("filed/{filed_name}")),
+            file_name: filed_name.clone(),
             modified_secs: 0,
             fingerprint: "abcd1234".to_string(),
             text: String::new(),
             parsed: Err("not parsed in this test".to_string()),
-            filed_for: Some(ob_model::SimpleDate {
-                year: 2026,
-                month: 11,
-                day: 8,
-            }),
+            filed_for: Some(filed_for),
         }];
         // The injected filed list stands as scanned:
         // without this, the check's rescan would read
         // the real Filed folder over it.
         app.inbox_dirty = false;
         app.path = Some(std::path::PathBuf::from("bulletin-r6b-test.obd"));
+        // Start from no stored marks for this file, so
+        // the count below measures this run only:
+        // App::default() loads the office's real
+        // settings file, and an earlier run of this
+        // test leaves its own mark under the same key.
+        app.settings
+            .set_part_approvals("bulletin-r6b-test.obd".into(), Vec::new());
         app.run_checks();
         assert!(
             app.checked_fingerprint.is_some(),
@@ -8136,7 +8153,7 @@ mod settings_tests {
         );
         let marks = app.settings.part_approvals_for("bulletin-r6b-test.obd");
         assert_eq!(marks.len(), 1, "{marks:?}");
-        assert_eq!(marks[0].part_id, "sue - 2026-11-08 - abcd1234.md");
+        assert_eq!(marks[0].part_id, filed_name);
         assert_eq!(marks[0].kind, PartApprovalKind::Check);
         assert_eq!(marks[0].fingerprint, "abcd1234");
         assert!(
